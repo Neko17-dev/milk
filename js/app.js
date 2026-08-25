@@ -2,8 +2,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const loaderBar = document.getElementById('loader-tech-bar');
     const welcomeSubtitle = document.querySelector('.welcome-subtitle-scramble');
     const welcomeScreen = document.getElementById('welcome-animation');
-    const disclaimerModal = document.getElementById('disclaimer-modal');
-    const acceptDisclaimerBtn = document.getElementById('accept-disclaimer');
+
 
     const updateLoader = (text, width) => {
         if (welcomeSubtitle) welcomeSubtitle.textContent = text;
@@ -61,21 +60,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         setInterval(checkStatusChange, 60000);
 
-        if (disclaimerModal) {
-            const tourSeen = await safeAwait(localforage?.getItem(APP_PREFIX + 'tour_seen'), false);
-            
-            if (!tourSeen) {
-                showModal(disclaimerModal);
-                
-                if (acceptDisclaimerBtn && !acceptDisclaimerBtn._bound) {
-                    acceptDisclaimerBtn._bound = true;
-                    acceptDisclaimerBtn.addEventListener('click', () => {
-                        hideModal(disclaimerModal);
-                        localforage?.setItem(APP_PREFIX + 'tour_seen', true).catch(() => {});
-                        startTour?.();
-                    }, { once: true });
-                }
-            }
+
+        const tourSeen = await safeAwait(localforage?.getItem(APP_PREFIX + 'tour_seen'), false);
+        if (!tourSeen) {
+            startTour?.();
         }
 
         updateLoader('连接成功，欢迎回来。', '100%');
