@@ -62,12 +62,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 
         const tourSeen = await safeAwait(localforage?.getItem(APP_PREFIX + 'tour_seen'), false);
-        if (!tourSeen) {
-            startTour?.();
-        }
 
         updateLoader('连接成功，欢迎回来。', '100%');
         setTimeout(hideWelcomeScreen, 3500);
+
+        if (!tourSeen) {
+            setTimeout(() => startTour?.(), 3500 + 800);
+        }
 
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') {
