@@ -14,7 +14,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         welcomeScreen.classList.add('hidden');
         setTimeout(() => {
             welcomeScreen.style.display = 'none';
-        }, 800);
+        }, 500);
     };
 
     const safeAwait = async (promise, fallback = null) => {
@@ -64,10 +64,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         const tourSeen = await safeAwait(localforage?.getItem(APP_PREFIX + 'tour_seen'), false);
 
         updateLoader('连接成功，欢迎回来。', '100%');
-        setTimeout(hideWelcomeScreen, 3500);
+        setTimeout(hideWelcomeScreen, 1200);
 
         if (!tourSeen) {
-            setTimeout(() => startTour?.(), 3500 + 800);
+            setTimeout(() => startTour?.(), 1200 + 500);
         }
 
         document.addEventListener('visibilitychange', () => {
@@ -162,7 +162,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             console.warn('[boot] 初始化失败后的恢复也失败:', recoverErr);
         }
         updateLoader('加载遇到问题，已强制进入...', '100%');
-        setTimeout(hideWelcomeScreen, 3500);
+        setTimeout(hideWelcomeScreen, 1200);
     }
 });
 const stickerInput = document.getElementById('sticker-file-input');
