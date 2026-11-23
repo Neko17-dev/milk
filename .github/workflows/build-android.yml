@@ -81,7 +81,18 @@ jobs:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
           if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > release.keystore
+            python3 - <<'PY'
+import os, re, base64
+raw = os.environ["ANDROID_KEYSTORE_BASE64"]
+cleaned = re.sub(r"\s+", "", raw)
+cleaned += "=" * (-len(cleaned) % 4)
+data = base64.b64decode(cleaned, validate=True)
+if len(data) < 100:
+    raise SystemExit(f"Decoded keystore too small ({len(data)} bytes), please check ANDROID_KEYSTORE_BASE64")
+with open("release.keystore", "wb") as f:
+    f.write(data)
+print(f"Decoded release.keystore ({len(data)} bytes)")
+PY
             echo "has_keystore=true" >> "$GITHUB_OUTPUT"
             echo "keystore_path=$(pwd)/release.keystore" >> "$GITHUB_OUTPUT"
           else
