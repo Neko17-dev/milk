@@ -126,6 +126,22 @@ https://milk.starleave.cn/admin
 
 输入 `ADMIN_TOKEN`（或使用 `https://milk.starleave.cn/admin/#admin_token=管理员密钥` 自动填入并清除地址栏）即可只读浏览所有用户的历史备份、搜索消息和查看图片，无任何修改/删除入口。
 
+## 6. 自动同步 GitHub Actions 最新构建的 APK（可选）
+
+每次在 GitHub Actions 运行 **Build Android APK** 后，工作流会自动把最新安装包更新到 Release `latest`（`milk-latest.apk`）。
+在服务器配置每 5 分钟检查一次，有新 build 自动下载并替换 `/data/www/milk/download/milk-latest.apk`：
+
+```bash
+chmod +x /data/www/milk/server/sync-apk.sh
+# 测试手动执行一次
+/data/www/milk/server/sync-apk.sh
+
+# 加入 crontab（每 5 分钟自动检查替换）
+(crontab -l 2>/dev/null; echo "*/5 * * * * /data/www/milk/server/sync-apk.sh >> /var/log/milk-apk-sync.log 2>&1") | crontab -
+```
+
+*(如果 GitHub 仓库设为私有，在 crontab 命令前加上 `GITHUB_TOKEN=你的token ` 即可。)*
+
 ## 5. 本地电脑拉回最新备份
 
 随时在本地终端执行即可拉回最新一份 ZIP：
