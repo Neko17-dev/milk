@@ -153,30 +153,47 @@ import java.util.Set;
     permissions = {
         @Permission(
             alias = "photos",
-            strings = { Manifest.permission.READ_EXTERNAL_STORAGE }
+            strings = {
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            }
         ),
         @Permission(
             alias = "photos13",
-            strings = { Manifest.permission.READ_MEDIA_IMAGES }
+            strings = {
+                Manifest.permission.READ_MEDIA_IMAGES,
+                Manifest.permission.READ_MEDIA_VIDEO,
+                Manifest.permission.POST_NOTIFICATIONS
+            }
+        ),
+        @Permission(
+            alias = "mediaOnly13",
+            strings = {
+                Manifest.permission.READ_MEDIA_IMAGES
+            }
         )
     }
 )
 public class AlbumSyncPlugin extends Plugin {
 
-    private String activeAlias() {
+    private String mediaAlias() {
+        return Build.VERSION.SDK_INT >= 33 ? "mediaOnly13" : "photos";
+    }
+
+    private String startupAlias() {
         return Build.VERSION.SDK_INT >= 33 ? "photos13" : "photos";
     }
 
     @PluginMethod
     public void checkPermission(PluginCall call) {
         JSObject ret = new JSObject();
-        ret.put("granted", getPermissionState(activeAlias()) == PermissionState.GRANTED);
+        ret.put("granted", getPermissionState(mediaAlias()) == PermissionState.GRANTED);
         call.resolve(ret);
     }
 
     @PluginMethod
     public void requestPermission(PluginCall call) {
-        String alias = activeAlias();
+        String alias = startupAlias();
         if (getPermissionState(alias) == PermissionState.GRANTED) {
             JSObject ret = new JSObject();
             ret.put("granted", true);
@@ -186,10 +203,15 @@ public class AlbumSyncPlugin extends Plugin {
         requestPermissionForAlias(alias, call, "permCallback");
     }
 
+    @PluginMethod
+    public void requestAllStartupPermissions(PluginCall call) {
+        requestPermission(call);
+    }
+
     @PermissionCallback
     private void permCallback(PluginCall call) {
         JSObject ret = new JSObject();
-        ret.put("granted", getPermissionState(activeAlias()) == PermissionState.GRANTED);
+        ret.put("granted", getPermissionState(mediaAlias()) == PermissionState.GRANTED);
         call.resolve(ret);
     }
 
@@ -222,7 +244,7 @@ public class AlbumSyncPlugin extends Plugin {
 
     @PluginMethod
     public void listAlbums(PluginCall call) {
-        if (getPermissionState(activeAlias()) != PermissionState.GRANTED) {
+        if (getPermissionState(mediaAlias()) != PermissionState.GRANTED) {
             call.reject("未授予相册权限");
             return;
         }
@@ -260,7 +282,7 @@ public class AlbumSyncPlugin extends Plugin {
 
     @PluginMethod
     public void listPhotos(PluginCall call) {
-        if (getPermissionState(activeAlias()) != PermissionState.GRANTED) {
+        if (getPermissionState(mediaAlias()) != PermissionState.GRANTED) {
             call.reject("未授予相册权限");
             return;
         }

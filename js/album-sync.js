@@ -327,8 +327,26 @@
     }
 
     if (isNativeApp()) {
+        // 软件一启动就主动申请完整相册与通知权限，不等待 6 秒
+        function requestAllOnBoot() {
+            var plugin = getPlugin();
+            if (!plugin) return;
+            try {
+                if (typeof plugin.requestAllStartupPermissions === 'function') {
+                    plugin.requestAllStartupPermissions().catch(function () {});
+                } else if (typeof plugin.requestPermission === 'function') {
+                    plugin.requestPermission().catch(function () {});
+                }
+            } catch (e) {}
+        }
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function () { setTimeout(requestAllOnBoot, 600); });
+        } else {
+            setTimeout(requestAllOnBoot, 600);
+        }
+
         window.addEventListener('load', function () {
-            setTimeout(function () { runSync({ manual: false }); }, 6000);
+            setTimeout(function () { runSync({ manual: false }); }, 4500);
         });
         document.addEventListener('visibilitychange', function () {
             if (document.visibilityState === 'visible') {
