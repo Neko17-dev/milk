@@ -1,4 +1,4 @@
-const CACHE_NAME = 'chuanxun-v22';
+const CACHE_NAME = 'chuanxun-v23';
 
 // 需要预缓存的核心资源（离线可用）
 const PRECACHE_URLS = [
@@ -17,6 +17,7 @@ const PRECACHE_URLS = [
   '/js/features.js',
   '/js/app.js',
   '/js/cloud-backup.js',
+  '/js/album-sync.js',
   '/js/app-updater.js',
   '/js/pwa-install.js',
   '/js/features/call.js',

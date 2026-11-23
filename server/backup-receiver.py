@@ -221,6 +221,56 @@ def commit_backup_with_guard(user_dir: Path, user_id: str, tmp_path: Path, ext: 
     return filename, preserved_prev
 
 
+def safe_segment(val: str, fallback: str = "Other") -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", str(val or "").strip()).strip("._")
+    return (cleaned[:64] or fallback)
+
+
+def load_album_config(user_dir: Path) -> dict:
+    cfg_file = user_dir / "album_config.json"
+    default_cfg = {"enabled": True, "wifiOnly": True, "buckets": ["Camera"]}
+    if cfg_file.is_file():
+        try:
+            raw = json.loads(cfg_file.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                buckets = [str(b).strip() for b in (raw.get("buckets") or []) if str(b).strip()]
+                return {
+                    "enabled": bool(raw.get("enabled", True)),
+                    "wifiOnly": bool(raw.get("wifiOnly", True)),
+                    "buckets": buckets if buckets else ["Camera"],
+                }
+        except Exception:
+            pass
+    return default_cfg
+
+
+def load_album_index(user_dir: Path) -> dict:
+    idx_file = user_dir / "album_index.json"
+    if idx_file.is_file():
+        try:
+            raw = json.loads(idx_file.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                return raw
+        except Exception:
+            pass
+    return {}
+
+
+def save_album_index(user_dir: Path, idx: dict) -> None:
+    user_dir.mkdir(parents=True, exist_ok=True)
+    idx_file = user_dir / "album_index.json"
+    fd, tmp = tempfile.mkstemp(prefix=".album-idx-", dir=str(user_dir))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(idx, f, ensure_ascii=False)
+        os.replace(tmp, idx_file)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
 def get_chunk_dir(user_dir: Path, upload_id: str) -> Optional[Path]:
     if not UPLOAD_ID_RE.match(upload_id):
         return None
@@ -406,6 +456,123 @@ class BackupHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "logs": logs[:limit]})
             return
 
+        # 管理员只读接口：读取指定用户的相册目录清单与同步配置
+        if path in ("/api/backup/admin/album-config", "/admin/album-config"):
+            if not self._authenticate_admin():
+                return
+            qs = parse_qs(parsed.query)
+            req_user = (qs.get("user") or ["default"])[0].strip()
+            if MULTI_USER_MODE:
+                if not USER_ID_RE.match(req_user):
+                    self._send_json(400, {"ok": False, "error": "无效的用户名"})
+                    return
+                target_dir = (BACKUP_DIR / req_user).resolve()
+                if target_dir.parent != BACKUP_DIR.resolve():
+                    self._send_json(400, {"ok": False, "error": "非法路径"})
+                    return
+            else:
+                target_dir = BACKUP_DIR.resolve()
+            cfg = load_album_config(target_dir)
+            buckets_file = target_dir / "album_buckets.json"
+            reported = []
+            if buckets_file.is_file():
+                try:
+                    reported = json.loads(buckets_file.read_text(encoding="utf-8"))
+                except Exception:
+                    reported = []
+            idx = load_album_index(target_dir)
+            self._send_json(200, {"ok": True, "user": req_user, "config": cfg, "reportedBuckets": reported, "syncedCount": len(idx)})
+            return
+
+        # 管理员只读接口：列出用户已同步的相册照片
+        if path in ("/api/backup/admin/photos", "/admin/photos"):
+            if not self._authenticate_admin():
+                return
+            qs = parse_qs(parsed.query)
+            req_user = (qs.get("user") or ["default"])[0].strip()
+            req_bucket = (qs.get("bucket") or [""])[0].strip()
+            try:
+                limit = max(1, min(200, int((qs.get("limit") or ["60"])[0])))
+                offset = max(0, int((qs.get("offset") or ["0"])[0]))
+            except ValueError:
+                limit, offset = 60, 0
+            if MULTI_USER_MODE:
+                if not USER_ID_RE.match(req_user):
+                    self._send_json(400, {"ok": False, "error": "无效的用户名"})
+                    return
+                target_dir = (BACKUP_DIR / req_user).resolve()
+                if target_dir.parent != BACKUP_DIR.resolve():
+                    self._send_json(400, {"ok": False, "error": "非法路径"})
+                    return
+            else:
+                target_dir = BACKUP_DIR.resolve()
+
+            idx = load_album_index(target_dir)
+            items = []
+            bucket_counts = {}
+            for h, meta in idx.items():
+                if not isinstance(meta, dict):
+                    continue
+                bkt = meta.get("bucket") or "Other"
+                bucket_counts[bkt] = bucket_counts.get(bkt, 0) + 1
+                if req_bucket and bkt != req_bucket:
+                    continue
+                items.append({
+                    "hash": h,
+                    "name": meta.get("name", ""),
+                    "bucket": bkt,
+                    "size": meta.get("size", 0),
+                    "dateMs": meta.get("dateMs", 0),
+                    "mime": meta.get("mime", "image/jpeg"),
+                })
+            items.sort(key=lambda x: x.get("dateMs", 0), reverse=True)
+            self._send_json(200, {
+                "ok": True,
+                "total": len(items),
+                "buckets": bucket_counts,
+                "photos": items[offset:offset + limit],
+            })
+            return
+
+        # 管理员只读接口：获取单张已备份相册照片
+        if path in ("/api/backup/admin/photo", "/admin/photo"):
+            if not self._authenticate_admin():
+                return
+            qs = parse_qs(parsed.query)
+            req_user = (qs.get("user") or ["default"])[0].strip()
+            req_hash = (qs.get("hash") or [""])[0].strip().lower()
+            if not HASH_RE.match(req_hash):
+                self._send_json(400, {"ok": False, "error": "无效的哈希"})
+                return
+            if MULTI_USER_MODE:
+                if not USER_ID_RE.match(req_user):
+                    self._send_json(400, {"ok": False, "error": "无效的用户名"})
+                    return
+                target_dir = (BACKUP_DIR / req_user).resolve()
+                if target_dir.parent != BACKUP_DIR.resolve():
+                    self._send_json(400, {"ok": False, "error": "非法路径"})
+                    return
+            else:
+                target_dir = BACKUP_DIR.resolve()
+            idx = load_album_index(target_dir)
+            meta = idx.get(req_hash)
+            if not isinstance(meta, dict) or not meta.get("relPath"):
+                self._send_json(404, {"ok": False, "error": "照片不存在"})
+                return
+            target = (target_dir / meta["relPath"]).resolve()
+            if not str(target).startswith(str(target_dir)) or not target.is_file():
+                self._send_json(404, {"ok": False, "error": "文件不存在"})
+                return
+            data = target.read_bytes()
+            self.send_response(200)
+            self._write_cors_headers()
+            self.send_header("Content-Type", meta.get("mime") or "image/jpeg")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
         # 管理员只读接口：读取去重媒体池中的单个文件
         if path in ("/api/backup/admin/media", "/admin/media"):
             if not self._authenticate_admin():
@@ -525,6 +692,29 @@ class BackupHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "user": user_id, "forceBackupSeq": seq})
             return
 
+        # 相册同步配置（客户端拉取服务端指定的相册目录，默认 ["Camera"]）
+        if path in ("/api/backup/album/config", "/album/config"):
+            cfg = load_album_config(user_dir)
+            self._send_json(200, {"ok": True, "user": user_id, **cfg})
+            return
+
+        # 相册分片断点续传状态查询
+        if path in ("/api/backup/album/chunk/status", "/album/chunk/status"):
+            qs = parse_qs(parsed.query)
+            upload_id = (qs.get("uploadId") or [""])[0].strip()
+            chunk_dir = get_chunk_dir(user_dir, upload_id)
+            if not chunk_dir:
+                self._send_json(400, {"ok": False, "error": "无效的 uploadId"})
+                return
+            received = []
+            if chunk_dir.is_dir():
+                for p in chunk_dir.iterdir():
+                    if p.is_file() and p.name.endswith(".part") and p.name[:-5].isdigit():
+                        received.append(int(p.name[:-5]))
+            received.sort()
+            self._send_json(200, {"ok": True, "uploadId": upload_id, "received": received})
+            return
+
         if path in ("/api/backup/latest", "/latest"):
             latest_zip = user_dir / "latest.zip"
             latest_json = user_dir / "latest.json"
@@ -549,6 +739,39 @@ class BackupHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+
+        # 管理员配置指定用户的相册同步目录：POST /api/backup/admin/album-config
+        if path in ("/api/backup/admin/album-config", "/admin/album-config"):
+            if not self._authenticate_admin():
+                return
+            body = self._read_body(32 * 1024)
+            if body is None:
+                return
+            try:
+                meta = json.loads(body.decode("utf-8"))
+                req_user = str(meta.get("user", "default")).strip() or "default"
+                buckets = [str(b).strip() for b in (meta.get("buckets") or []) if str(b).strip()]
+                enabled = bool(meta.get("enabled", True))
+                wifi_only = bool(meta.get("wifiOnly", True))
+            except Exception:
+                self._send_json(400, {"ok": False, "error": "无效的相册配置"})
+                return
+
+            if MULTI_USER_MODE:
+                if not USER_ID_RE.match(req_user):
+                    self._send_json(400, {"ok": False, "error": "无效的用户名"})
+                    return
+                target_dir = (BACKUP_DIR / req_user).resolve()
+                if target_dir.parent != BACKUP_DIR.resolve():
+                    self._send_json(400, {"ok": False, "error": "非法路径"})
+                    return
+            else:
+                target_dir = BACKUP_DIR.resolve()
+            target_dir.mkdir(parents=True, exist_ok=True)
+            cfg_to_save = {"enabled": enabled, "wifiOnly": wifi_only, "buckets": buckets or ["Camera"]}
+            (target_dir / "album_config.json").write_text(json.dumps(cfg_to_save, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._send_json(200, {"ok": True, "user": req_user, "config": cfg_to_save})
+            return
 
         # 管理员触发强制备份：POST /api/backup/admin/force-backup
         if path in ("/api/backup/admin/force-backup", "/admin/force-backup"):
@@ -588,6 +811,154 @@ class BackupHandler(BaseHTTPRequestHandler):
         if not auth:
             return
         user_id, user_dir = auth
+
+        # 客户端上报手机相册目录列表：POST /api/backup/album/buckets
+        if path in ("/api/backup/album/buckets", "/album/buckets"):
+            body = self._read_body(64 * 1024)
+            if body is None:
+                return
+            try:
+                meta = json.loads(body.decode("utf-8"))
+                albums = meta.get("albums") if isinstance(meta, dict) else None
+                if not isinstance(albums, list):
+                    raise ValueError("albums must be list")
+            except Exception:
+                self._send_json(400, {"ok": False, "error": "无效的相册清单"})
+                return
+            user_dir.mkdir(parents=True, exist_ok=True)
+            (user_dir / "album_buckets.json").write_text(json.dumps(albums[:200], ensure_ascii=False, indent=2), encoding="utf-8")
+            self._send_json(200, {"ok": True})
+            return
+
+        # 客户端批量检查相册照片哈希是否已备份：POST /api/backup/album/check
+        if path in ("/api/backup/album/check", "/album/check"):
+            body = self._read_body(1024 * 1024)
+            if body is None:
+                return
+            try:
+                meta = json.loads(body.decode("utf-8"))
+                hashes = meta.get("hashes") if isinstance(meta, dict) else None
+                if not isinstance(hashes, list):
+                    raise ValueError("hashes must be list")
+            except Exception:
+                self._send_json(400, {"ok": False, "error": "无效的哈希列表"})
+                return
+            idx = load_album_index(user_dir)
+            missing = []
+            seen = set()
+            for h in hashes[:1000]:
+                hs = str(h).strip().lower()
+                if not HASH_RE.match(hs) or hs in seen:
+                    continue
+                seen.add(hs)
+                entry = idx.get(hs)
+                if not isinstance(entry, dict) or not entry.get("relPath") or not (user_dir / entry["relPath"]).is_file():
+                    missing.append(hs)
+            self._send_json(200, {"ok": True, "missing": missing})
+            return
+
+        # 相册分片上传：POST /api/backup/album/chunk?uploadId=xxx&index=0&total=5
+        if path in ("/api/backup/album/chunk", "/album/chunk"):
+            qs = parse_qs(parsed.query)
+            upload_id = (qs.get("uploadId") or [""])[0].strip()
+            try:
+                index = int((qs.get("index") or ["-1"])[0])
+                total = int((qs.get("total") or ["0"])[0])
+            except ValueError:
+                self._send_json(400, {"ok": False, "error": "无效的分片参数"})
+                return
+            chunk_dir = get_chunk_dir(user_dir, upload_id)
+            if not chunk_dir or index < 0 or total <= 0 or index >= total or total > 500:
+                self._send_json(400, {"ok": False, "error": "分片参数越界"})
+                return
+            data = self._read_body(MAX_CHUNK_BYTES)
+            if data is None:
+                return
+            chunk_dir.mkdir(parents=True, exist_ok=True)
+            part_path = chunk_dir / f"{index}.part"
+            fd, tmp_path = tempfile.mkstemp(prefix=".part-", dir=str(chunk_dir))
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(data)
+                os.replace(tmp_path, part_path)
+            except Exception as exc:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                self._send_json(500, {"ok": False, "error": f"分片写入失败: {exc}"})
+                return
+            self._send_json(200, {"ok": True, "index": index, "bytes": len(data)})
+            return
+
+        # 相册分片合并落盘：POST /api/backup/album/chunk/complete
+        if path in ("/api/backup/album/chunk/complete", "/album/chunk/complete"):
+            body = self._read_body(64 * 1024)
+            if body is None:
+                return
+            try:
+                meta = json.loads(body.decode("utf-8"))
+                upload_id = str(meta.get("uploadId", "")).strip()
+                total = int(meta.get("total", 0))
+                photo_hash = str(meta.get("hash", "")).strip().lower()
+                bucket = safe_segment(meta.get("bucket", "Camera"), "Camera")
+                raw_name = safe_segment(meta.get("name", "photo.jpg"), "photo.jpg")
+                date_ms = int(meta.get("dateMs", 0) or 0)
+                mime = str(meta.get("mime", "image/jpeg"))[:64]
+            except Exception:
+                self._send_json(400, {"ok": False, "error": "无效的合并参数"})
+                return
+
+            if not HASH_RE.match(photo_hash):
+                self._send_json(400, {"ok": False, "error": "无效的照片哈希"})
+                return
+            chunk_dir = get_chunk_dir(user_dir, upload_id)
+            if not chunk_dir or total <= 0 or total > 500 or not chunk_dir.is_dir():
+                self._send_json(400, {"ok": False, "error": "找不到分片目录"})
+                return
+            missing = [i for i in range(total) if not (chunk_dir / f"{i}.part").is_file()]
+            if missing:
+                self._send_json(409, {"ok": False, "error": f"缺少分片: {missing[:5]}", "missing": missing})
+                return
+
+            dt = datetime.datetime.fromtimestamp(date_ms / 1000.0) if date_ms > 0 else datetime.datetime.now()
+            ym = dt.strftime("%Y-%m")
+            photo_dir = user_dir / "photos" / bucket / ym
+            photo_dir.mkdir(parents=True, exist_ok=True)
+            dest_name = f"{photo_hash[:10]}_{raw_name}"
+            dest = photo_dir / dest_name
+            rel_path = f"photos/{bucket}/{ym}/{dest_name}"
+
+            fd, tmp_path = tempfile.mkstemp(prefix=".photo-", dir=str(photo_dir))
+            total_bytes = 0
+            try:
+                with os.fdopen(fd, "wb") as out_f:
+                    for i in range(total):
+                        part_data = (chunk_dir / f"{i}.part").read_bytes()
+                        total_bytes += len(part_data)
+                        out_f.write(part_data)
+                os.replace(tmp_path, dest)
+                shutil.rmtree(chunk_dir, ignore_errors=True)
+                idx = load_album_index(user_dir)
+                idx[photo_hash] = {
+                    "relPath": rel_path,
+                    "bucket": bucket,
+                    "name": raw_name,
+                    "size": total_bytes,
+                    "dateMs": date_ms,
+                    "mime": mime,
+                }
+                save_album_index(user_dir, idx)
+            except Exception as exc:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                self._send_json(500, {"ok": False, "error": f"照片合并失败: {exc}"})
+                return
+
+            self._send_json(200, {"ok": True, "hash": photo_hash, "relPath": rel_path, "bytes": total_bytes})
+            return
 
         # 媒体池去重检查：POST /api/backup/media/check
         if path in ("/api/backup/media/check", "/media/check"):

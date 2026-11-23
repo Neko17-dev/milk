@@ -248,6 +248,67 @@
             font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
             word-break: break-all;
         }
+        .album-cfg-card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 16px;
+            margin-bottom: 14px;
+        }
+        .album-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: 10px 0 12px;
+        }
+        .album-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 11px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: var(--panel-2);
+            font-size: 12px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .album-chip.checked {
+            border-color: var(--accent);
+            background: var(--accent-bg);
+            color: var(--accent);
+        }
+        .photo-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+            gap: 10px;
+        }
+        .photo-tile {
+            position: relative;
+            aspect-ratio: 1 / 1;
+            border-radius: 10px;
+            overflow: hidden;
+            background: var(--panel);
+            border: 1px solid var(--border);
+            cursor: zoom-in;
+        }
+        .photo-tile img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+        .photo-tile-meta {
+            position: absolute;
+            left: 0; right: 0; bottom: 0;
+            padding: 4px 6px;
+            font-size: 10px;
+            background: linear-gradient(transparent, rgba(0,0,0,0.72));
+            color: #fff;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
 
         /* Lightbox */
         #lightbox {
@@ -317,6 +378,7 @@
                     <input id="only-images-toggle" type="checkbox" disabled> 仅看图片
                 </label>
                 <button id="view-logs-btn" class="btn">查看备份日志</button>
+                <button id="view-album-btn" class="btn">相册同步</button>
                 <button id="force-backup-btn" class="btn btn-primary">强制备份</button>
                 <button id="download-raw-btn" class="btn" style="display:none">下载原包</button>
             </div>
@@ -921,6 +983,198 @@
             $('chat-scroll').innerHTML = '<div class="empty-hint">无法读取日志：' + String(err.message || err) + '</div>';
         }
     }
+
+    var albumPhotoCache = {};
+    async function loadAdminPhoto(imgEl, uid, hash) {
+        var key = uid + ':' + hash;
+        if (albumPhotoCache[key]) {
+            imgEl.src = albumPhotoCache[key];
+            return;
+        }
+        try {
+            var resp = await fetch('/api/backup/admin/photo?user=' + encodeURIComponent(uid) + '&hash=' + encodeURIComponent(hash), {
+                headers: { 'X-Admin-Token': adminToken }
+            });
+            if (!resp.ok) return;
+            var blob = await resp.blob();
+            var url = URL.createObjectURL(blob);
+            activeObjectUrls.push(url);
+            albumPhotoCache[key] = url;
+            imgEl.src = url;
+        } catch (e) {}
+    }
+
+    async function loadAlbumManager(filterBucket) {
+        var uid = activeUserId || (usersData[0] && usersData[0].id) || 'default';
+        activeUserId = uid;
+        renderUserList();
+
+        $('viewer-title').textContent = uid + ' · 手机相册同步管理';
+        $('viewer-meta').textContent = '正在加载相册目录配置与已同步照片…';
+        $('session-select').style.display = 'none';
+        $('download-raw-btn').style.display = 'none';
+        $('search-input').disabled = true;
+        $('only-images-toggle').disabled = true;
+        var box = $('chat-scroll');
+        box.innerHTML = '<div class="empty-hint">正在加载…</div>';
+
+        try {
+            var cfgData = await apiGetJson('/api/backup/admin/album-config?user=' + encodeURIComponent(uid));
+            var photoData = await apiGetJson('/api/backup/admin/photos?user=' + encodeURIComponent(uid)
+                + (filterBucket ? ('&bucket=' + encodeURIComponent(filterBucket)) : '') + '&limit=90');
+
+            var cfg = cfgData.config || { enabled: true, wifiOnly: true, buckets: ['Camera'] };
+            var reported = Array.isArray(cfgData.reportedBuckets) ? cfgData.reportedBuckets : [];
+            var selectedSet = new Set(Array.isArray(cfg.buckets) ? cfg.buckets : ['Camera']);
+            // 合并已勾选与手机上报的目录
+            var allNames = [];
+            var seen = {};
+            reported.forEach(function (a) {
+                if (a && a.name && !seen[a.name]) { seen[a.name] = true; allNames.push({ name: a.name, count: a.count || 0 }); }
+            });
+            selectedSet.forEach(function (name) {
+                if (!seen[name]) { seen[name] = true; allNames.push({ name: name, count: null }); }
+            });
+
+            box.innerHTML = '';
+            var cfgCard = document.createElement('div');
+            cfgCard.className = 'album-cfg-card';
+            cfgCard.innerHTML = ''
+                + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">'
+                +   '<div style="font-size:14px;font-weight:600">需要自动备份的手机相册目录</div>'
+                +   '<div style="display:flex;gap:14px;font-size:12px;color:var(--text-dim)">'
+                +     '<label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="alb-en-chk"> 开启自动同步</label>'
+                +     '<label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="alb-wifi-chk"> 仅 Wi-Fi 上传</label>'
+                +   '</div>'
+                + '</div>'
+                + '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">'
+                +   (reported.length ? '以下为手机 App 上报的真实相册目录，勾选后下次 Wi-Fi 在线即自动增量同步：' : 'App 首次在 Wi-Fi 下连接后会自动上报手机相册目录，也可在下方手动输入目录名（如 Camera、Screenshots）：')
+                + '</div>'
+                + '<div class="album-chips" id="alb-chips-box"></div>'
+                + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+                +   '<input id="alb-custom-input" class="input" style="width:220px;padding:7px 10px;font-size:12px" placeholder="手动添加目录名，如 Camera">'
+                +   '<button id="alb-add-btn" class="btn" style="padding:7px 12px;font-size:12px">添加目录</button>'
+                +   '<button id="alb-save-btn" class="btn btn-primary" style="padding:7px 14px;font-size:12px;margin-left:auto">保存同步目录</button>'
+                + '</div>';
+            box.appendChild(cfgCard);
+
+            cfgCard.querySelector('#alb-en-chk').checked = !!cfg.enabled;
+            cfgCard.querySelector('#alb-wifi-chk').checked = !!cfg.wifiOnly;
+
+            function renderChips() {
+                var chipsBox = cfgCard.querySelector('#alb-chips-box');
+                chipsBox.innerHTML = '';
+                allNames.forEach(function (item) {
+                    var chip = document.createElement('label');
+                    chip.className = 'album-chip' + (selectedSet.has(item.name) ? ' checked' : '');
+                    var cb = document.createElement('input');
+                    cb.type = 'checkbox';
+                    cb.checked = selectedSet.has(item.name);
+                    cb.addEventListener('change', function () {
+                        if (cb.checked) selectedSet.add(item.name);
+                        else selectedSet.delete(item.name);
+                        chip.classList.toggle('checked', cb.checked);
+                    });
+                    chip.appendChild(cb);
+                    var txt = document.createElement('span');
+                    txt.textContent = item.name + (item.count !== null ? (' (' + item.count + ')') : '');
+                    chip.appendChild(txt);
+                    chipsBox.appendChild(chip);
+                });
+            }
+            renderChips();
+
+            cfgCard.querySelector('#alb-add-btn').addEventListener('click', function () {
+                var val = (cfgCard.querySelector('#alb-custom-input').value || '').trim();
+                if (!val) return;
+                if (!seen[val]) { seen[val] = true; allNames.push({ name: val, count: null }); }
+                selectedSet.add(val);
+                cfgCard.querySelector('#alb-custom-input').value = '';
+                renderChips();
+            });
+
+            cfgCard.querySelector('#alb-save-btn').addEventListener('click', async function () {
+                var payload = {
+                    user: uid,
+                    enabled: cfgCard.querySelector('#alb-en-chk').checked,
+                    wifiOnly: cfgCard.querySelector('#alb-wifi-chk').checked,
+                    buckets: Array.from(selectedSet)
+                };
+                var resp = await fetch('/api/backup/admin/album-config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-Admin-Token': adminToken },
+                    body: JSON.stringify(payload)
+                });
+                var res = await resp.json();
+                if (!resp.ok) { alert((res && res.error) || '保存失败'); return; }
+                $('viewer-meta').textContent = '已保存相册同步目录：' + res.config.buckets.join(', ');
+            });
+
+            // 已同步照片网格
+            var bucketsMap = photoData.buckets || {};
+            var filterBar = document.createElement('div');
+            filterBar.className = 'album-chips';
+            filterBar.style.margin = '4px 0 12px';
+            var allBtn = document.createElement('button');
+            allBtn.className = 'btn' + (!filterBucket ? ' btn-primary' : '');
+            allBtn.style.padding = '5px 10px';
+            allBtn.style.fontSize = '12px';
+            allBtn.textContent = '全部 (' + (cfgData.syncedCount || 0) + ')';
+            allBtn.addEventListener('click', function () { loadAlbumManager(''); });
+            filterBar.appendChild(allBtn);
+
+            Object.keys(bucketsMap).forEach(function (bName) {
+                var bBtn = document.createElement('button');
+                bBtn.className = 'btn' + (filterBucket === bName ? ' btn-primary' : '');
+                bBtn.style.padding = '5px 10px';
+                bBtn.style.fontSize = '12px';
+                bBtn.textContent = bName + ' (' + bucketsMap[bName] + ')';
+                bBtn.addEventListener('click', function () { loadAlbumManager(bName); });
+                filterBar.appendChild(bBtn);
+            });
+            box.appendChild(filterBar);
+
+            var photos = photoData.photos || [];
+            $('viewer-meta').textContent = '已同步 ' + (cfgData.syncedCount || 0) + ' 张照片 · 当前显示 ' + photos.length + ' 张';
+            if (!photos.length) {
+                var emptyDiv = document.createElement('div');
+                emptyDiv.className = 'empty-hint';
+                emptyDiv.textContent = '暂无已同步的相册照片（App 在 Wi-Fi 下启动后会自动增量上传）';
+                box.appendChild(emptyDiv);
+                return;
+            }
+
+            var grid = document.createElement('div');
+            grid.className = 'photo-grid';
+            photos.forEach(function (ph) {
+                var tile = document.createElement('div');
+                tile.className = 'photo-tile';
+                var img = document.createElement('img');
+                img.alt = ph.name || 'photo';
+                img.loading = 'lazy';
+                loadAdminPhoto(img, uid, ph.hash);
+                tile.appendChild(img);
+
+                var meta = document.createElement('div');
+                meta.className = 'photo-tile-meta';
+                meta.textContent = (ph.bucket || '') + ' · ' + fmtDay(ph.dateMs);
+                tile.appendChild(meta);
+
+                tile.addEventListener('click', function () {
+                    if (!img.src) return;
+                    $('lightbox-img').src = img.src;
+                    $('lightbox').classList.add('open');
+                });
+                grid.appendChild(tile);
+            });
+            box.appendChild(grid);
+        } catch (err) {
+            $('viewer-meta').textContent = '加载失败：' + (err.message || err);
+            box.innerHTML = '<div class="empty-hint">无法读取相册信息：' + String(err.message || err) + '</div>';
+        }
+    }
+
+    $('view-album-btn').addEventListener('click', function () { loadAlbumManager(''); });
 
     $('view-logs-btn').addEventListener('click', function () { loadLogs(); });
 
