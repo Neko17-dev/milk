@@ -89,7 +89,10 @@ jobs:
               echo "::error::ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD 不能为空，请检查 GitHub Secrets 名称是否拼写正确"
               exit 1
             fi
-            keytool -list -keystore release.keystore -storepass "$(echo -n "$ANDROID_KEYSTORE_PASSWORD" | xargs)" -alias "$(echo -n "$ANDROID_KEY_ALIAS" | xargs)" > /dev/null
+            if ! KT_OUT=$(keytool -list -keystore release.keystore -storepass "$(echo -n "$ANDROID_KEYSTORE_PASSWORD" | xargs)" -alias "$(echo -n "$ANDROID_KEY_ALIAS" | xargs)" 2>&1); then
+              echo "::error::Keystore 校验失败: $KT_OUT"
+              exit 1
+            fi
             echo "has_keystore=true" >> "$GITHUB_OUTPUT"
             echo "keystore_path=$(pwd)/release.keystore" >> "$GITHUB_OUTPUT"
           else
