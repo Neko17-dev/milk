@@ -377,7 +377,7 @@ const loadData = async () => {
                 }
                 setTimeout(() => saveData(), 1000);
                 showNotification(
-                    `已从备份恢复 ${messages.length} 条消息${backup._truncated ? '（备份为最近200条）' : ''}`,
+                    `已从备份恢复 ${messages.length} 条消息${backup._truncated ? '（部分截断备份）' : ''}`,
                     'warning', 6000
                 );
             } else {
@@ -507,41 +507,60 @@ window.deleteAnniversaryItem = function(id) {
 };
 
 const _BACKUP_PREFIX = 'BACKUP_V1_';
+function _stripLargeMediaForBackup(node) {
+    if (node === null || node === undefined) return node;
+    if (typeof node === 'string') {
+        if (node.length > 2048 && /^data:(image|video|audio)\//i.test(node)) {
+            return undefined;
+        }
+        return node;
+    }
+    if (node instanceof Date) return node.toISOString();
+    if (Array.isArray(node)) {
+        return node.map(item => _stripLargeMediaForBackup(item)).filter(item => item !== undefined);
+    }
+    if (typeof node === 'object') {
+        const out = {};
+        for (const k of Object.keys(node)) {
+            const v = _stripLargeMediaForBackup(node[k]);
+            if (v !== undefined) out[k] = v;
+        }
+        return out;
+    }
+    return node;
+}
+
 function _backupCriticalData() {
     if (window._skipBackup) return;
     try {
-        const backupPayload = {
-            ts: Date.now(),
-            messages: messages,
-            settings: settings,
-            sessionId: SESSION_ID,
-            anniversaries: anniversaries
-        };
+        const safeSettings = _stripLargeMediaForBackup(settings);
+        const safeAnniversaries = _stripLargeMediaForBackup(anniversaries);
+        const MAX_SAFE_CHARS = 2.5 * 1024 * 1024;
+        const limits = [null, 500, 200, 50];
 
-        let payloadToStore = backupPayload;
-        const msgSizeEstimate = messages.length * 500; 
-        if (msgSizeEstimate > 3 * 1024 * 1024) {
-            payloadToStore = {
-                ...backupPayload,
-                messages: messages.slice(-200),
-                _truncated: true
+        let jsonToSave = null;
+        for (const limit of limits) {
+            const slice = limit === null ? messages : messages.slice(-limit);
+            const payload = {
+                ts: Date.now(),
+                messages: _stripLargeMediaForBackup(slice),
+                settings: safeSettings,
+                sessionId: SESSION_ID,
+                anniversaries: safeAnniversaries,
+                _mediaStripped: true,
+                _truncated: limit !== null && messages.length > limit
             };
+            const candidate = JSON.stringify(payload);
+            if (candidate.length <= MAX_SAFE_CHARS || limit === limits[limits.length - 1]) {
+                jsonToSave = candidate;
+                break;
+            }
         }
 
-        const json = JSON.stringify(payloadToStore);
-
-        if (json.length > 4.5 * 1024 * 1024) {
-            const smallerPayload = {
-                ...payloadToStore,
-                messages: messages.slice(-50),
-                _truncated: true
-            };
-            const smallerJson = JSON.stringify(smallerPayload);
-            localStorage.setItem(_BACKUP_PREFIX + 'critical', smallerJson);
-        } else {
-            localStorage.setItem(_BACKUP_PREFIX + 'critical', json);
+        if (jsonToSave) {
+            localStorage.setItem(_BACKUP_PREFIX + 'critical', jsonToSave);
+            localStorage.setItem(_BACKUP_PREFIX + 'timestamp', String(Date.now()));
         }
-        localStorage.setItem(_BACKUP_PREFIX + 'timestamp', String(Date.now()));
     } catch (e) {
         console.warn('localStorage 备份写入失败（可能存储已满）:', e);
     }

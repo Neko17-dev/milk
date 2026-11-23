@@ -1,4 +1,4 @@
-const CACHE_NAME = 'chuanxun-v2';
+const CACHE_NAME = 'chuanxun-v3';
 
 // 需要预缓存的核心资源（离线可用）
 const PRECACHE_URLS = [
@@ -16,6 +16,7 @@ const PRECACHE_URLS = [
   '/js/games.js',
   '/js/features.js',
   '/js/app.js',
+  '/js/pwa-install.js',
   '/js/features/call.js',
   '/js/features/envelope.js',
   '/js/features/group-chat.js',

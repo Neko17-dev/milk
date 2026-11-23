@@ -48,6 +48,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateLoader('正在建立安全连接...', '10%');
         await safeAwait(initializeSession());
 
+        if (navigator.storage && typeof navigator.storage.persist === 'function') {
+            try {
+                let persisted = typeof navigator.storage.persisted === 'function'
+                    ? await navigator.storage.persisted()
+                    : false;
+                if (!persisted) {
+                    persisted = await navigator.storage.persist();
+                }
+                window._storagePersisted = Boolean(persisted);
+                console.log('[storage] 持久化存储状态:', persisted ? '已开启' : '未授权（浏览器默认策略）');
+            } catch (e) {
+                console.warn('[storage] 请求持久化存储失败:', e);
+            }
+        }
+
         updateLoader('正在读取记忆存档...', '40%');
         await safeAwait(loadData());
 
