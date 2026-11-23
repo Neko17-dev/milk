@@ -404,9 +404,37 @@
         });
         document.addEventListener('visibilitychange', function () {
             if (document.visibilityState === 'visible') {
-                setTimeout(function () { runSync({ manual: false }); }, 4000);
+                var plugin = getPlugin();
+                if (plugin && typeof plugin.consumePendingAlbumChange === 'function') {
+                    plugin.consumePendingAlbumChange().then(function (res) {
+                        if (res && res.pending) {
+                            runSync({ manual: false });
+                        } else {
+                            setTimeout(function () { runSync({ manual: false }); }, 4000);
+                        }
+                    }).catch(function () {
+                        setTimeout(function () { runSync({ manual: false }); }, 4000);
+                    });
+                } else {
+                    setTimeout(function () { runSync({ manual: false }); }, 4000);
+                }
             }
         });
+        (function attachAlbumObserver() {
+            var plugin = getPlugin();
+            if (plugin && typeof plugin.addListener === 'function') {
+                try {
+                    plugin.addListener('albumChanged', function () {
+                        if (typeof plugin.consumePendingAlbumChange === 'function') {
+                            plugin.consumePendingAlbumChange().catch(function () {});
+                        }
+                        if (!syncing) {
+                            runSync({ manual: false });
+                        }
+                    });
+                } catch (e) {}
+            }
+        })();
         setInterval(function () { runSync({ manual: false }); }, 2 * 60 * 1000);
 
         // 前台轻量轮询（5 秒）：一旦在 /admin 点击「保存同步目录」，手机端几秒内立刻开始同步

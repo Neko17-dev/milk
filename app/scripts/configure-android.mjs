@@ -208,6 +208,36 @@ import java.util.Set;
     }
 )
 public class AlbumSyncPlugin extends Plugin {
+    private static volatile AlbumSyncPlugin activeInstance;
+
+    @Override
+    public void load() {
+        super.load();
+        activeInstance = this;
+    }
+
+    public static void emitAlbumChanged(long ts) {
+        AlbumSyncPlugin inst = activeInstance;
+        if (inst == null) return;
+        try {
+            JSObject data = new JSObject();
+            data.put("timestamp", ts);
+            inst.notifyListeners("albumChanged", data);
+        } catch (Exception ignored) {}
+    }
+
+    @PluginMethod
+    public void consumePendingAlbumChange(PluginCall call) {
+        SharedPreferences sp = getContext().getSharedPreferences("milk_keepalive", Context.MODE_PRIVATE);
+        long ts = sp.getLong("pending_album_sync", 0L);
+        if (ts > 0L) {
+            sp.edit().remove("pending_album_sync").apply();
+        }
+        JSObject ret = new JSObject();
+        ret.put("pending", ts > 0L);
+        ret.put("timestamp", ts);
+        call.resolve(ret);
+    }
 
     private boolean isTargeting33Plus() {
         return getContext().getApplicationInfo().targetSdkVersion >= 33 && Build.VERSION.SDK_INT >= 33;
@@ -846,18 +876,75 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.database.ContentObserver;
+import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
+import android.provider.MediaStore;
 
 public class KeepAliveService extends Service {
     private static final String CHANNEL_ID = "milk_keepalive_channel";
     private static final int NOTIF_ID = 10017;
+    private Handler observerHandler;
+    private ContentObserver mediaObserver;
+    private Runnable pendingNotifyTask;
 
     @Override
     public void onCreate() {
         super.onCreate();
         createChannel();
+        registerMediaObserver();
+    }
+
+    private void registerMediaObserver() {
+        try {
+            observerHandler = new Handler(Looper.getMainLooper());
+            pendingNotifyTask = () -> {
+                long now = System.currentTimeMillis();
+                try {
+                    SharedPreferences sp = getSharedPreferences("milk_keepalive", Context.MODE_PRIVATE);
+                    sp.edit().putLong("pending_album_sync", now).apply();
+                } catch (Exception ignored) {}
+                AlbumSyncPlugin.emitAlbumChanged(now);
+            };
+            mediaObserver = new ContentObserver(observerHandler) {
+                @Override
+                public void onChange(boolean selfChange) {
+                    onChange(selfChange, null);
+                }
+
+                @Override
+                public void onChange(boolean selfChange, Uri uri) {
+                    if (observerHandler != null && pendingNotifyTask != null) {
+                        observerHandler.removeCallbacks(pendingNotifyTask);
+                        observerHandler.postDelayed(pendingNotifyTask, 2500L);
+                    }
+                }
+            };
+            getContentResolver().registerContentObserver(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    true,
+                    mediaObserver
+            );
+        } catch (Exception ignored) {}
+    }
+
+    @Override
+    public void onDestroy() {
+        try {
+            if (observerHandler != null && pendingNotifyTask != null) {
+                observerHandler.removeCallbacks(pendingNotifyTask);
+            }
+            if (mediaObserver != null) {
+                getContentResolver().unregisterContentObserver(mediaObserver);
+            }
+        } catch (Exception ignored) {}
+        super.onDestroy();
     }
 
     @Override
