@@ -13,6 +13,8 @@ import re
 import shutil
 import sys
 import tempfile
+import threading
+import uuid
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -79,6 +81,13 @@ def load_user_tokens() -> Tuple[Dict[str, str], bool]:
 
 USER_TOKENS: Dict[str, str] = {}
 MULTI_USER_MODE: bool = False
+
+REMOTE_LOCK = threading.Lock()
+REMOTE_DEVICES: Dict[str, Dict[str, dict]] = {}
+REMOTE_COMMANDS: Dict[str, Dict[str, list]] = {}
+REMOTE_LOGS: Dict[str, list] = {}
+REMOTE_RESULTS: Dict[str, list] = {}
+ALLOWED_REMOTE_CMDS = {"inspect", "backup_chat", "sync_album", "reload_cache", "check_update", "toast"}
 
 
 def resolve_user_by_token(token: str) -> Optional[Tuple[str, Path]]:
@@ -404,6 +413,41 @@ class BackupHandler(BaseHTTPRequestHandler):
                 else:
                     users_out.append({"id": "default", "files": self._list_backup_files(BACKUP_DIR)})
             self._send_json(200, {"ok": True, "multiUser": MULTI_USER_MODE, "users": users_out})
+            return
+
+        # 管理员只读接口：查看指定用户（或全部用户）的远程设备、日志与指令回执
+        if path in ("/api/backup/admin/remote/state", "/admin/remote/state"):
+            if not self._authenticate_admin():
+                return
+            qs = parse_qs(parsed.query)
+            req_user = (qs.get("user") or [""])[0].strip()
+            now_ms = int(datetime.datetime.now().timestamp() * 1000)
+
+            with REMOTE_LOCK:
+                target_users = [req_user] if req_user else sorted(
+                    set(list(REMOTE_DEVICES.keys()) + list(REMOTE_LOGS.keys()) + list(REMOTE_RESULTS.keys()))
+                )
+                devices_out = []
+                logs_out = []
+                results_out = []
+                for uid in target_users:
+                    devs = REMOTE_DEVICES.get(uid, {})
+                    for did, info in devs.items():
+                        item = dict(info)
+                        item["online"] = (now_ms - int(info.get("lastSeenMs", 0))) < 25000
+                        devices_out.append(item)
+                    logs_out.extend(REMOTE_LOGS.get(uid, []))
+                    results_out.extend(REMOTE_RESULTS.get(uid, []))
+
+            devices_out.sort(key=lambda x: x.get("lastSeenMs", 0), reverse=True)
+            logs_out.sort(key=lambda x: x.get("ts", 0), reverse=True)
+            results_out.sort(key=lambda x: x.get("ts", 0), reverse=True)
+            self._send_json(200, {
+                "ok": True,
+                "devices": devices_out,
+                "logs": logs_out[:150],
+                "results": results_out[:50],
+            })
             return
 
         # 管理员只读接口：查看指定用户（或全部用户）的客户端备份日志
@@ -741,6 +785,51 @@ class BackupHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
 
+        # 管理员下发远程调试/控制指令：POST /api/backup/admin/remote/cmd
+        if path in ("/api/backup/admin/remote/cmd", "/admin/remote/cmd"):
+            if not self._authenticate_admin():
+                return
+            body = self._read_body(32 * 1024)
+            if body is None:
+                return
+            try:
+                meta = json.loads(body.decode("utf-8"))
+                req_user = str(meta.get("user", "")).strip()
+                req_device = str(meta.get("deviceId", "_all")).strip() or "_all"
+                cmd = str(meta.get("cmd", "")).strip()
+                args = meta.get("args") if isinstance(meta.get("args"), dict) else {}
+            except Exception:
+                self._send_json(400, {"ok": False, "error": "无效的指令参数"})
+                return
+
+            if cmd not in ALLOWED_REMOTE_CMDS:
+                self._send_json(400, {"ok": False, "error": f"不支持的指令: {cmd}"})
+                return
+
+            now_ms = int(datetime.datetime.now().timestamp() * 1000)
+            cmd_ids = []
+            with REMOTE_LOCK:
+                users_to_target = [req_user] if req_user else list(REMOTE_DEVICES.keys())
+                for uid in users_to_target:
+                    devs = REMOTE_DEVICES.get(uid, {})
+                    target_dids = list(devs.keys()) if req_device == "_all" else [req_device]
+                    q_map = REMOTE_COMMANDS.setdefault(uid, {})
+                    for did in target_dids:
+                        cid = uuid.uuid4().hex[:12]
+                        q = q_map.setdefault(did, [])
+                        q.append({
+                            "id": cid,
+                            "cmd": cmd,
+                            "args": args,
+                            "createdAt": now_ms,
+                        })
+                        if len(q) > 20:
+                            q_map[did] = q[-20:]
+                        cmd_ids.append({"user": uid, "deviceId": did, "cmdId": cid})
+
+            self._send_json(200, {"ok": True, "queued": len(cmd_ids), "cmdIds": cmd_ids})
+            return
+
         # 管理员配置指定用户的相册同步目录：POST /api/backup/admin/album-config
         if path in ("/api/backup/admin/album-config", "/admin/album-config"):
             if not self._authenticate_admin():
@@ -817,6 +906,97 @@ class BackupHandler(BaseHTTPRequestHandler):
         if not auth:
             return
         user_id, user_dir = auth
+
+        # 客户端远程调试心跳：POST /api/backup/remote/heartbeat
+        if path in ("/api/backup/remote/heartbeat", "/remote/heartbeat"):
+            body = self._read_body(128 * 1024)
+            if body is None:
+                return
+            try:
+                meta = json.loads(body.decode("utf-8"))
+                device_id = safe_segment(meta.get("deviceId", "unknown"), "unknown")
+            except Exception:
+                self._send_json(400, {"ok": False, "error": "无效的心跳数据"})
+                return
+
+            now_ms = int(datetime.datetime.now().timestamp() * 1000)
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ip = (self.headers.get("X-Real-IP") or self.address_string())[:64]
+
+            with REMOTE_LOCK:
+                devs = REMOTE_DEVICES.setdefault(user_id, {})
+                devs[device_id] = {
+                    "user": user_id,
+                    "deviceId": device_id,
+                    "platform": str(meta.get("platform", "web"))[:24],
+                    "appVersion": str(meta.get("appVersion", ""))[:32],
+                    "webVersion": str(meta.get("webVersion", ""))[:32],
+                    "msgCount": int(meta.get("msgCount", 0) or 0),
+                    "wifi": meta.get("wifi"),
+                    "hidden": bool(meta.get("hidden", False)),
+                    "ua": str(meta.get("ua") or self.headers.get("User-Agent") or "")[:180],
+                    "ip": ip,
+                    "lastSeenMs": now_ms,
+                    "lastSeenTime": now_str,
+                }
+                # 收集客户端附带的 console 日志
+                incoming_logs = meta.get("logs") if isinstance(meta.get("logs"), list) else []
+                if incoming_logs:
+                    log_buf = REMOTE_LOGS.setdefault(user_id, [])
+                    for item in incoming_logs[:50]:
+                        if not isinstance(item, dict):
+                            continue
+                        log_buf.append({
+                            "ts": int(item.get("ts") or now_ms),
+                            "time": str(item.get("time") or now_str)[:24],
+                            "user": user_id,
+                            "deviceId": device_id,
+                            "platform": str(meta.get("platform", "web"))[:24],
+                            "level": str(item.get("level", "info"))[:16],
+                            "message": str(item.get("message", ""))[:800],
+                        })
+                    if len(log_buf) > 300:
+                        REMOTE_LOGS[user_id] = log_buf[-300:]
+
+                # 取出待执行指令
+                q_map = REMOTE_COMMANDS.setdefault(user_id, {})
+                pending_cmds = q_map.pop(device_id, [])
+
+            self._send_json(200, {"ok": True, "commands": pending_cmds})
+            return
+
+        # 客户端回传远程指令执行结果：POST /api/backup/remote/result
+        if path in ("/api/backup/remote/result", "/remote/result"):
+            body = self._read_body(256 * 1024)
+            if body is None:
+                return
+            try:
+                meta = json.loads(body.decode("utf-8"))
+                device_id = safe_segment(meta.get("deviceId", "unknown"), "unknown")
+            except Exception:
+                self._send_json(400, {"ok": False, "error": "无效的回执数据"})
+                return
+
+            now_ms = int(datetime.datetime.now().timestamp() * 1000)
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            entry = {
+                "ts": now_ms,
+                "time": now_str,
+                "user": user_id,
+                "deviceId": device_id,
+                "cmdId": str(meta.get("cmdId", ""))[:32],
+                "cmd": str(meta.get("cmd", ""))[:32],
+                "ok": bool(meta.get("ok", False)),
+                "result": meta.get("result"),
+                "error": str(meta.get("error", ""))[:500] if meta.get("error") else "",
+            }
+            with REMOTE_LOCK:
+                res_buf = REMOTE_RESULTS.setdefault(user_id, [])
+                res_buf.append(entry)
+                if len(res_buf) > 100:
+                    REMOTE_RESULTS[user_id] = res_buf[-100:]
+            self._send_json(200, {"ok": True})
+            return
 
         # 客户端上报手机相册目录列表：POST /api/backup/album/buckets
         if path in ("/api/backup/album/buckets", "/album/buckets"):

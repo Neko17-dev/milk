@@ -309,6 +309,32 @@
             overflow: hidden;
             text-overflow: ellipsis;
         }
+        .dev-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+        .dev-card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px 14px;
+            cursor: pointer;
+        }
+        .dev-card.selected {
+            border-color: var(--accent);
+            background: var(--accent-bg);
+        }
+        .dot-on, .dot-off {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 6px;
+        }
+        .dot-on { background: #3bc8a4; box-shadow: 0 0 8px rgba(59,200,164,0.7); }
+        .dot-off { background: #6c7280; }
 
         /* Lightbox */
         #lightbox {
@@ -379,6 +405,7 @@
                 </label>
                 <button id="view-logs-btn" class="btn">查看备份日志</button>
                 <button id="view-album-btn" class="btn">相册同步</button>
+                <button id="view-remote-btn" class="btn">远程控制台</button>
                 <button id="force-backup-btn" class="btn btn-primary">强制备份</button>
                 <button id="download-raw-btn" class="btn" style="display:none">下载原包</button>
             </div>
@@ -670,6 +697,7 @@
     }
 
     async function loadBackup(uid, fileName) {
+        stopRemotePolling();
         activeUserId = uid;
         activeFileName = fileName;
         renderFileList(uid);
@@ -1174,9 +1202,201 @@
         }
     }
 
-    $('view-album-btn').addEventListener('click', function () { loadAlbumManager(''); });
+    var remoteAutoTimer = null;
+    var selectedRemoteDevice = '_all';
 
-    $('view-logs-btn').addEventListener('click', function () { loadLogs(); });
+    function stopRemotePolling() {
+        if (remoteAutoTimer) {
+            clearInterval(remoteAutoTimer);
+            remoteAutoTimer = null;
+        }
+    }
+
+    async function sendRemoteCmd(uid, deviceId, cmd, args) {
+        var resp = await fetch('/api/backup/admin/remote/cmd', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Admin-Token': adminToken
+            },
+            body: JSON.stringify({ user: uid || '', deviceId: deviceId || '_all', cmd: cmd, args: args || {} })
+        });
+        var data = await resp.json();
+        if (!resp.ok) throw new Error((data && data.error) || ('HTTP ' + resp.status));
+        return data;
+    }
+
+    async function renderRemoteConsole(isSilentRefresh) {
+        var uid = activeUserId || '';
+        if (!isSilentRefresh) {
+            $('viewer-title').textContent = (uid ? (uid + ' · ') : '全部用户 · ') + '远程调试控制台';
+            $('viewer-meta').textContent = '每 4 秒自动刷新在线设备、指令回执与远程 Console 日志';
+            $('session-select').style.display = 'none';
+            $('download-raw-btn').style.display = 'none';
+            $('search-input').disabled = true;
+            $('only-images-toggle').disabled = true;
+        }
+
+        try {
+            var q = uid ? ('?user=' + encodeURIComponent(uid)) : '';
+            var state = await apiGetJson('/api/backup/admin/remote/state' + q);
+            var devices = state.devices || [];
+            var logs = state.logs || [];
+            var results = state.results || [];
+            var box = $('chat-scroll');
+
+            if (selectedRemoteDevice !== '_all' && !devices.some(function (d) { return d.deviceId === selectedRemoteDevice; })) {
+                selectedRemoteDevice = '_all';
+            }
+
+            box.innerHTML = '';
+
+            // 1. 在线设备列表
+            var devTitle = document.createElement('div');
+            devTitle.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:13px;font-weight:600';
+            var onlineCnt = devices.filter(function (d) { return d.online; }).length;
+            devTitle.innerHTML = '<span>在线设备（' + onlineCnt + ' / ' + devices.length + ' 在线）</span>'
+                + '<span style="font-size:11px;font-weight:400;color:var(--text-dim)">点击设备卡片可单独选中目标</span>';
+            box.appendChild(devTitle);
+
+            if (!devices.length) {
+                var noDev = document.createElement('div');
+                noDev.className = 'album-cfg-card';
+                noDev.style.fontSize = '12px';
+                noDev.style.color = 'var(--text-dim)';
+                noDev.textContent = '暂无已连接设备（仅已配置 backup_token 的 Web / PWA / APK 客户端会自动连接）';
+                box.appendChild(noDev);
+            } else {
+                var grid = document.createElement('div');
+                grid.className = 'dev-grid';
+
+                var allCard = document.createElement('div');
+                allCard.className = 'dev-card' + (selectedRemoteDevice === '_all' ? ' selected' : '');
+                allCard.innerHTML = '<div style="font-size:13px;font-weight:600">全部设备广播</div>'
+                    + '<div class="item-sub">向当前用户下所有在线端统一下发指令</div>';
+                allCard.addEventListener('click', function () {
+                    selectedRemoteDevice = '_all';
+                    renderRemoteConsole(true);
+                });
+                grid.appendChild(allCard);
+
+                devices.forEach(function (d) {
+                    var card = document.createElement('div');
+                    card.className = 'dev-card' + (selectedRemoteDevice === d.deviceId ? ' selected' : '');
+                    var verTag = d.appVersion ? ('v' + d.appVersion) : (d.webVersion || 'web');
+                    var wifiTag = d.wifi === true ? ' · Wi-Fi' : (d.wifi === false ? ' · 移动网络' : '');
+                    card.innerHTML = ''
+                        + '<div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:600">'
+                        +   '<span><span class="' + (d.online ? 'dot-on' : 'dot-off') + '"></span>' + d.user + ' · ' + d.platform + '</span>'
+                        +   '<span class="item-sub">' + verTag + '</span>'
+                        + '</div>'
+                        + '<div class="item-sub">ID: ' + d.deviceId + ' · 消息 ' + d.msgCount + ' 条' + wifiTag + '</div>'
+                        + '<div class="item-sub">最近心跳: ' + (d.lastSeenTime || '-') + ' · IP: ' + (d.ip || '-') + '</div>';
+                    card.addEventListener('click', function () {
+                        selectedRemoteDevice = d.deviceId;
+                        renderRemoteConsole(true);
+                    });
+                    grid.appendChild(card);
+                });
+                box.appendChild(grid);
+            }
+
+            // 2. 远程指令下发台
+            var cmdCard = document.createElement('div');
+            cmdCard.className = 'album-cfg-card';
+            cmdCard.innerHTML = ''
+                + '<div style="font-size:13px;font-weight:600;margin-bottom:10px">下发远程指令（目标：'
+                + (selectedRemoteDevice === '_all' ? '全部设备' : selectedRemoteDevice) + '）</div>'
+                + '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">'
+                +   '<button class="btn btn-primary" data-rcmd="inspect">设备体检 (inspect)</button>'
+                +   '<button class="btn" data-rcmd="backup_chat">立即聊天备份</button>'
+                +   '<button class="btn" data-rcmd="sync_album">立即相册同步</button>'
+                +   '<button class="btn" data-rcmd="reload_cache">清缓存热刷新</button>'
+                +   '<button class="btn" data-rcmd="check_update">检查 APK 更新</button>'
+                + '</div>'
+                + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+                +   '<input id="rcmd-toast-input" class="input" style="flex:1;min-width:180px;padding:7px 10px;font-size:12px" placeholder="输入向客户端屏幕发送的提示文字…">'
+                +   '<button id="rcmd-toast-btn" class="btn" style="padding:7px 12px;font-size:12px">发送屏幕弹窗</button>'
+                + '</div>';
+
+            cmdCard.querySelectorAll('[data-rcmd]').forEach(function (btn) {
+                btn.addEventListener('click', async function () {
+                    var c = btn.getAttribute('data-rcmd');
+                    try {
+                        var res = await sendRemoteCmd(uid, selectedRemoteDevice, c, {});
+                        $('viewer-meta').textContent = '已下发指令「' + c + '」（排队 ' + res.queued + ' 台设备），等待客户端回执…';
+                    } catch (e) {
+                        alert('下发失败：' + (e.message || e));
+                    }
+                });
+            });
+            cmdCard.querySelector('#rcmd-toast-btn').addEventListener('click', async function () {
+                var txt = (cmdCard.querySelector('#rcmd-toast-input').value || '').trim();
+                if (!txt) return;
+                try {
+                    var res = await sendRemoteCmd(uid, selectedRemoteDevice, 'toast', { text: txt });
+                    cmdCard.querySelector('#rcmd-toast-input').value = '';
+                    $('viewer-meta').textContent = '已下发弹窗提示（排队 ' + res.queued + ' 台设备）';
+                } catch (e) {
+                    alert('发送失败：' + (e.message || e));
+                }
+            });
+            box.appendChild(cmdCard);
+
+            // 3. 指令执行回执
+            if (results.length) {
+                var resTitle = document.createElement('div');
+                resTitle.style.cssText = 'font-size:13px;font-weight:600;margin:4px 0 8px';
+                resTitle.textContent = '最近指令回执（' + results.length + ' 条）';
+                box.appendChild(resTitle);
+                results.slice(0, 15).forEach(function (r) {
+                    var rc = document.createElement('div');
+                    rc.className = 'log-card';
+                    var badge = '<span class="log-lv ' + (r.ok ? 'info' : 'error') + '">' + (r.ok ? 'OK' : 'ERR') + '</span>';
+                    rc.innerHTML = '<div class="log-head">' + badge + '<span>' + r.time + ' · ' + r.user + ' · ' + r.deviceId + ' · 指令: ' + r.cmd + '</span></div>'
+                        + '<div class="log-detail"></div>';
+                    rc.querySelector('.log-detail').textContent = r.ok ? JSON.stringify(r.result) : (r.error || '执行失败');
+                    box.appendChild(rc);
+                });
+            }
+
+            // 4. 实时远程 Console 日志
+            var logTitle = document.createElement('div');
+            logTitle.style.cssText = 'font-size:13px;font-weight:600;margin:10px 0 8px';
+            logTitle.textContent = '实时远程 Console / 异常日志（' + logs.length + ' 条）';
+            box.appendChild(logTitle);
+            if (!logs.length) {
+                var emptyLog = document.createElement('div');
+                emptyLog.className = 'item-sub';
+                emptyLog.textContent = '暂无远程 Console 异常或警告日志';
+                box.appendChild(emptyLog);
+            } else {
+                logs.slice(0, 80).forEach(function (lg) {
+                    var lc = document.createElement('div');
+                    lc.className = 'log-card';
+                    var lvName = (lg.level || 'info').toLowerCase();
+                    lc.innerHTML = '<div class="log-head"><span class="log-lv ' + lvName + '">' + lvName + '</span><span>'
+                        + lg.time + ' · ' + lg.user + ' · ' + lg.platform + ' (' + lg.deviceId + ')</span></div><div></div>';
+                    lc.querySelector('div:last-child').textContent = lg.message || '';
+                    box.appendChild(lc);
+                });
+            }
+        } catch (err) {
+            $('viewer-meta').textContent = '远程控制台加载失败：' + (err.message || err);
+        }
+    }
+
+    $('view-remote-btn').addEventListener('click', function () {
+        stopRemotePolling();
+        renderRemoteConsole(false);
+        remoteAutoTimer = setInterval(function () {
+            renderRemoteConsole(true);
+        }, 4000);
+    });
+
+    $('view-album-btn').addEventListener('click', function () { stopRemotePolling(); loadAlbumManager(''); });
+
+    $('view-logs-btn').addEventListener('click', function () { stopRemotePolling(); loadLogs(); });
 
     $('force-backup-btn').addEventListener('click', async function () {
         var target = activeUserId || '_all';
