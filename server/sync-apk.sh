@@ -33,7 +33,7 @@ import json, sys
 data = json.load(sys.stdin)
 for a in data.get("assets", []):
     if a.get("name") == "milk-latest.apk":
-        print(f"{a.get(\"id\")}|{a.get(\"updated_at\")}|{a.get(\"browser_download_url\")}|{a.get(\"url\")}")
+        print(a.get("id"), a.get("updated_at"), a.get("browser_download_url"), a.get("url"), sep="|")
         sys.exit(0)
 sys.exit(1)
 ' <<< "${RELEASE_JSON}") || {
