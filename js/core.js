@@ -1326,14 +1326,69 @@ const addMessage = (message) => {
             });
         }
 
+        let _heic2anyPromise = null;
+        function _loadHeic2Any() {
+            if (typeof window.heic2any === 'function') return Promise.resolve(window.heic2any);
+            if (_heic2anyPromise) return _heic2anyPromise;
+            const urls = [
+                'https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js',
+                'https://unpkg.com/heic2any@0.0.4/dist/heic2any.min.js'
+            ];
+            _heic2anyPromise = (async () => {
+                for (const src of urls) {
+                    try {
+                        await new Promise((res, rej) => {
+                            const s = document.createElement('script');
+                            s.src = src;
+                            s.async = true;
+                            s.onload = res;
+                            s.onerror = rej;
+                            document.head.appendChild(s);
+                        });
+                        if (typeof window.heic2any === 'function') return window.heic2any;
+                    } catch (e) {}
+                }
+                _heic2anyPromise = null;
+                throw new Error('HEIC 解码组件加载失败，请检查网络');
+            })();
+            return _heic2anyPromise;
+        }
+
+        async function _convertHeicToStandardBlob(file) {
+            const heic2any = await _loadHeic2Any();
+            const res = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 });
+            return Array.isArray(res) ? res[0] : res;
+        }
+
         async function optimizeImage(file, maxWidth = 800, quality = 0.7) {
-            const realMime = await _sniffImageMime(file);
-            const typedBlob = realMime && (!file.type || !file.type.startsWith('image/'))
-                ? new Blob([file], { type: realMime })
-                : file;
+            let realMime = await _sniffImageMime(file);
+            let workingFile = file;
+
+            if (realMime === 'image/heic' || realMime === 'image/heif') {
+                // 先试原生解码（Safari 可直接解），失败则自动用 heic2any 转成 JPG
+                try {
+                    const testUrl = URL.createObjectURL(file);
+                    try {
+                        await _loadImageElement(testUrl);
+                    } finally {
+                        URL.revokeObjectURL(testUrl);
+                    }
+                } catch (nativeErr) {
+                    if (typeof showNotification === 'function' && !window._heicNoticeShown) {
+                        window._heicNoticeShown = true;
+                        showNotification('检测到 HEIC 格式图片，正在自动转换…', 'info', 2500);
+                    }
+                    workingFile = await _convertHeicToStandardBlob(file);
+                    realMime = 'image/jpeg';
+                }
+            }
+
+            const typedBlob = realMime && (!workingFile.type || !workingFile.type.startsWith('image/'))
+                ? new Blob([workingFile], { type: realMime })
+                : workingFile;
 
             // 动图 GIF 与小于 300KB 的常规图片优先保留原图，并校验浏览器可正常解码
-            if (realMime === 'image/gif' || (file.size < 300 * 1024 && realMime && realMime !== 'image/heic' && realMime !== 'image/heif')) {
+            if (realMime === 'image/gif' || (workingFile.size < 300 * 1024 && realMime && realMime !== 'image/heic' && realMime !== 'image/heif')) {
                 const rawUrl = await _readBlobAsDataUrl(typedBlob);
                 try {
                     await _loadImageElement(rawUrl);

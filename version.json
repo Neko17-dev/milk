@@ -3,7 +3,7 @@
   "versionCode": 2,
   "minVersionCode": 2,
   "forceUpdate": true,
-  "webVersion": "2026.11.23.5",
+  "webVersion": "2026.11.23.6",
   "changelog": "1. 修复表情库导入图片图裂问题\n2. 移除原生 App 内多余的 PWA 安装引导与按钮",
   "downloadUrl": "https://milk.starleave.cn/download/milk-latest.apk"
 }
