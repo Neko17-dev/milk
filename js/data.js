@@ -263,11 +263,39 @@
         } catch (e) { processLS(); }
     }
 
+    function getNativeLocalNotif() {
+        try {
+            return (window.Capacitor
+                && typeof window.Capacitor.isNativePlatform === 'function'
+                && window.Capacitor.isNativePlatform()
+                && window.Capacitor.Plugins
+                && window.Capacitor.Plugins.LocalNotifications)
+                ? window.Capacitor.Plugins.LocalNotifications
+                : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
     function syncToggles() {
         var n = document.getElementById('notif-permission-toggle');
-        if (n) n.checked = localStorage.getItem('notifEnabled') === '1'
+        var ln = getNativeLocalNotif();
+        if (n && ln) {
+            n.checked = localStorage.getItem('notifEnabled') === '1';
+            ln.checkPermissions().then(function (res) {
+                var granted = res && res.display === 'granted';
+                if (granted && localStorage.getItem('notifEnabled') === null) {
+                    localStorage.setItem('notifEnabled', '1');
+                }
+                n.checked = granted && localStorage.getItem('notifEnabled') === '1';
+                var st = document.getElementById('notif-status-text');
+                if (st && n.checked) st.textContent = '✅ 已开启 — 后台收到消息会弹出系统通知';
+            }).catch(function () {});
+        } else if (n) {
+            n.checked = localStorage.getItem('notifEnabled') === '1'
                         && 'Notification' in window
                         && Notification.permission === 'granted';
+        }
         if (window.CloudBackup && typeof window.CloudBackup.updateStatusLabel === 'function') {
             window.CloudBackup.updateStatusLabel();
         }
@@ -596,12 +624,37 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
+function _getNativeNotifPlugin() {
+    try {
+        return (window.Capacitor
+            && typeof window.Capacitor.isNativePlatform === 'function'
+            && window.Capacitor.isNativePlatform()
+            && window.Capacitor.Plugins
+            && window.Capacitor.Plugins.LocalNotifications)
+            ? window.Capacitor.Plugins.LocalNotifications
+            : null;
+    } catch (e) {
+        return null;
+    }
+}
+
 window._sendPartnerNotification = function(title, body) {
     try {
         if (localStorage.getItem('notifEnabled') !== '1') return;
+        if (!document.hidden) return;
+        var ln = _getNativeNotifPlugin();
+        if (ln) {
+            ln.schedule({
+                notifications: [{
+                    id: Math.floor(Date.now() % 2147483647),
+                    title: title || '传讯',
+                    body: body || '对方发来了消息'
+                }]
+            }).catch(function() {});
+            return;
+        }
         if (!('Notification' in window)) return;
         if (Notification.permission !== 'granted') return;
-        if (!document.hidden) return;
         new Notification(title || '传讯', {
             body: body || '对方发来了消息',
             icon: (document.querySelector('#partner-avatar img') || {}).src,
@@ -613,6 +666,37 @@ window._sendPartnerNotification = function(title, body) {
 
 window.handleNotifToggle = function(checkbox) {
     var statusEl = document.getElementById('notif-status-text');
+    var ln = _getNativeNotifPlugin();
+    if (ln) {
+        if (checkbox.checked) {
+            ln.requestPermissions().then(function(res) {
+                if (res && res.display === 'granted') {
+                    if (statusEl) statusEl.textContent = '✅ 已开启 — 当应用在后台时，收到消息会弹出系统通知';
+                    localStorage.setItem('notifEnabled', '1');
+                    ln.schedule({
+                        notifications: [{
+                            id: Math.floor(Date.now() % 2147483647),
+                            title: '传讯通知已开启 ✨',
+                            body: '你现在可以在后台收到消息提醒了'
+                        }]
+                    }).catch(function() {});
+                } else {
+                    checkbox.checked = false;
+                    if (statusEl) statusEl.textContent = '❌ 通知权限被拒绝，请在系统设置中开启';
+                    localStorage.setItem('notifEnabled', '0');
+                }
+            }).catch(function() {
+                checkbox.checked = false;
+                if (statusEl) statusEl.textContent = '❌ 请求通知权限失败';
+                localStorage.setItem('notifEnabled', '0');
+            });
+        } else {
+            if (statusEl) statusEl.textContent = '已关闭 — 后台将不再弹出消息提醒';
+            localStorage.setItem('notifEnabled', '0');
+        }
+        return;
+    }
+
     if (!('Notification' in window)) {
         checkbox.checked = false;
         if (statusEl) statusEl.textContent = '⚠️ 您的浏览器不支持通知功能，请更换浏览器';
