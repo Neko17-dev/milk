@@ -288,6 +288,53 @@
         });
     }
 
+    function applyTokenFromUrl() {
+        try {
+            var token = '';
+            var cleaned = false;
+            var urlObj = new URL(window.location.href);
+
+            // 1. 优先支持 Hash：https://milk.starleave.cn/#backup_token=xxx（不会进入服务器访问日志，更安全）
+            if (urlObj.hash && urlObj.hash.length > 1) {
+                var hashParams = new URLSearchParams(urlObj.hash.slice(1));
+                if (hashParams.has('backup_token')) {
+                    token = (hashParams.get('backup_token') || '').trim();
+                    hashParams.delete('backup_token');
+                    var restHash = hashParams.toString();
+                    urlObj.hash = restHash ? ('#' + restHash) : '';
+                    cleaned = true;
+                }
+            }
+
+            // 2. 同时兼容 Query：https://milk.starleave.cn/?backup_token=xxx
+            if (!token && urlObj.searchParams.has('backup_token')) {
+                token = (urlObj.searchParams.get('backup_token') || '').trim();
+                urlObj.searchParams.delete('backup_token');
+                cleaned = true;
+            }
+
+            if (cleaned && window.history && typeof window.history.replaceState === 'function') {
+                window.history.replaceState(null, '', urlObj.pathname + urlObj.search + urlObj.hash);
+            }
+
+            if (token) {
+                saveConfig({ token: token, enabled: true });
+                console.log('[cloud-backup] 已从链接自动配置备份密钥并开启每日自动上传');
+                window.addEventListener('load', function () {
+                    setTimeout(function () {
+                        if (typeof showNotification === 'function') {
+                            showNotification('已自动填入服务器备份密钥并开启每日备份', 'success', 3500);
+                        }
+                    }, 1800);
+                });
+            }
+        } catch (e) {
+            console.warn('[cloud-backup] 解析链接密钥失败:', e);
+        }
+    }
+
+    applyTokenFromUrl();
+
     window.addEventListener('load', function () {
         setTimeout(maybeAutoBackup, 12000);
     });

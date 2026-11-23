@@ -42,28 +42,48 @@ systemctl enable --now milk-backup
 systemctl status milk-backup
 ```
 
-## 2. Nginx 增加 `/api/backup` 反向代理
+## 2. Caddy 增加 `/api/backup` 反向代理（适配 frp + Caddy）
 
-在 `milk.starleave.cn` 对应的 Nginx `server { ... }` 块里加入：
+在 `Caddyfile` 对应站点块（`milk.starleave.cn` 或 frp 指向的 `:端口`）里加入：
 
-```nginx
-location /api/backup {
-    proxy_pass http://127.0.0.1:8787;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    client_max_body_size 200m;
-    proxy_read_timeout 120s;
-}
+```caddyfile
+    # 1. 备份接口反代到本机 Python 服务
+    handle /api/backup* {
+        request_body {
+            max_size 200MB
+        }
+        reverse_proxy 127.0.0.1:8787
+    }
+
+    # 2. 防止 sw.js 被强缓存，发版后 PWA 立刻刷新
+    @sw path /sw.js
+    header @sw Cache-Control "no-cache"
+
+    # 3. 其余静态文件
+    handle {
+        root * /data/www/milk
+        file_server
+    }
 ```
 
-重载 Nginx：
+重载 Caddy（**frp 无需改任何配置**，因为共用同一个域名和端口）：
 
 ```bash
-nginx -t && systemctl reload nginx
+caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy
 ```
 
 ## 3. 在网页端配置
 
+**方式一（推荐，一键自动填入）：**
+直接在手机或电脑浏览器访问（推荐使用 `#` 形式，密钥不会进入服务器日志，打开后地址栏会自动抹除密钥）：
+
+```
+https://milk.starleave.cn/#backup_token=替换成你的随机密钥
+```
+
+*(也兼容 `https://milk.starleave.cn/?backup_token=替换成你的随机密钥`)*
+
+**方式二（手动填写）：**
 1. 打开 `https://milk.starleave.cn/` → 设置 → **数据管理** → **服务器每日自动备份**；
 2. 密钥（Token）填入第一步设置的 `BACKUP_TOKEN`（接口地址保持默认 `/api/backup`）；
 3. 点「**立即上传**」测试，看到提示「云端备份上传成功」即完成，此后每天打开页面都会自动在后台上传一次。
