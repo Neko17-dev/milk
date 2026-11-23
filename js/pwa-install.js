@@ -3,8 +3,9 @@
 
     var DISMISS_KEY = 'pwaInstallDismissedAt';
     var COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000; // 7 天内不重复打扰
-    var deferredPrompt = null;
+    var deferredPrompt = window.__deferredPwaPrompt || null;
     var bannerEl = null;
+    var currentMode = null;
     var showTimer = null;
 
     function isStandalone() {
@@ -136,16 +137,37 @@
         bannerEl.classList.remove('pwa-visible');
         var el = bannerEl;
         bannerEl = null;
+        currentMode = null;
         setTimeout(function () {
             if (el && el.parentNode) el.parentNode.removeChild(el);
         }, 320);
     }
 
     function showBanner(mode) {
-        if (isStandalone() || bannerEl) return;
+        if (isStandalone()) return;
+        if (bannerEl) {
+            // 如果已显示手动引导但原生安装事件刚刚到达，升级为一键安装
+            if (mode === 'native' && currentMode !== 'native') {
+                var descEl = bannerEl.querySelector('.pwa-banner-desc');
+                var btnEl = bannerEl.querySelector('#pwa-install-action');
+                if (descEl) descEl.textContent = '全屏畅聊、离线可用，数据存储更稳妥';
+                if (btnEl) btnEl.textContent = '立即安装';
+                currentMode = 'native';
+            }
+            return;
+        }
         injectStyles();
 
+        currentMode = mode;
+        var isNative = mode === 'native';
         var isIosMode = mode === 'ios';
+        var descText = isNative
+            ? '全屏畅聊、离线可用，数据存储更稳妥'
+            : isIosMode
+                ? '点击底部「分享」图标，选择「添加到主屏幕」'
+                : '点击浏览器菜单中的「安装应用 / 添加到主屏幕」';
+        var btnText = isNative ? '立即安装' : '知道了';
+
         var el = document.createElement('div');
         el.id = 'pwa-install-banner';
         el.setAttribute('role', 'dialog');
@@ -155,16 +177,10 @@
             + '<img class="pwa-banner-icon" src="icons/icon-192.png" alt="传讯" onerror="this.style.display=\'none\'">'
             + '<div class="pwa-banner-body">'
             +   '<div class="pwa-banner-title">安装「传讯」到桌面</div>'
-            +   '<div class="pwa-banner-desc">'
-            +     (isIosMode
-                    ? '点击底部「分享」图标，选择「添加到主屏幕」'
-                    : '全屏畅聊、离线可用，数据存储更稳妥')
-            +   '</div>'
+            +   '<div class="pwa-banner-desc">' + descText + '</div>'
             + '</div>'
             + '<div class="pwa-banner-actions">'
-            +   (isIosMode
-                    ? '<button type="button" class="pwa-btn-install" id="pwa-install-action">知道了</button>'
-                    : '<button type="button" class="pwa-btn-install" id="pwa-install-action">立即安装</button>')
+            +   '<button type="button" class="pwa-btn-install" id="pwa-install-action">' + btnText + '</button>'
             +   '<button type="button" class="pwa-btn-close" id="pwa-install-close" aria-label="暂不安装">×</button>'
             + '</div>';
 
@@ -188,16 +204,13 @@
 
         if (actionBtn) {
             actionBtn.addEventListener('click', function () {
-                if (isIosMode) {
-                    hideBanner(true);
-                    return;
-                }
-                if (!deferredPrompt) {
+                if (currentMode !== 'native' || !deferredPrompt) {
                     hideBanner(true);
                     return;
                 }
                 var promptEvent = deferredPrompt;
                 deferredPrompt = null;
+                window.__deferredPwaPrompt = null;
                 promptEvent.prompt();
                 if (promptEvent.userChoice && typeof promptEvent.userChoice.then === 'function') {
                     promptEvent.userChoice.then(function (choice) {
@@ -216,37 +229,53 @@
         }
     }
 
-    function scheduleShow(mode) {
+    function scheduleShow(mode, delayMs) {
         if (isStandalone() || isInCooldown()) return;
         if (showTimer) clearTimeout(showTimer);
         showTimer = setTimeout(function () {
             if (!isStandalone() && !isInCooldown()) {
-                showBanner(mode);
+                showBanner(deferredPrompt ? 'native' : mode);
             }
-        }, 3500);
+        }, typeof delayMs === 'number' ? delayMs : 3000);
     }
 
     if (isStandalone()) return;
+
+    // 若 <head> 已提前捕获到 beforeinstallprompt，立即安排弹出
+    if (deferredPrompt) {
+        scheduleShow('native', 2500);
+    }
 
     // Android / 桌面端 Chrome、Edge 等原生安装事件
     window.addEventListener('beforeinstallprompt', function (e) {
         e.preventDefault();
         deferredPrompt = e;
-        scheduleShow('native');
+        window.__deferredPwaPrompt = e;
+        if (bannerEl) {
+            showBanner('native');
+        } else {
+            scheduleShow('native', 2500);
+        }
     });
 
     window.addEventListener('appinstalled', function () {
         deferredPrompt = null;
+        window.__deferredPwaPrompt = null;
         hideBanner(false);
         if (typeof showNotification === 'function') {
             showNotification('已安装到桌面，数据存储将更加稳定', 'success', 3500);
         }
     });
 
-    // iOS Safari 引导（不支持 beforeinstallprompt）
+    // 页面加载后兜底：iOS 显示 Safari 引导；其他未触发原生事件的浏览器也显示菜单引导
     window.addEventListener('load', function () {
-        if (isIOS() && !isStandalone()) {
-            scheduleShow('ios');
+        if (isStandalone()) return;
+        if (deferredPrompt) {
+            scheduleShow('native', 2500);
+        } else if (isIOS()) {
+            scheduleShow('ios', 3000);
+        } else {
+            scheduleShow('manual', 4000);
         }
     });
 
@@ -262,8 +291,8 @@
             showBanner('native');
         } else if (isIOS()) {
             showBanner('ios');
-        } else if (typeof showNotification === 'function') {
-            showNotification('请使用浏览器菜单中的「添加到主屏幕 / 安装应用」', 'info', 3500);
+        } else {
+            showBanner('manual');
         }
     };
 })();

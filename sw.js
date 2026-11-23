@@ -1,4 +1,4 @@
-const CACHE_NAME = 'chuanxun-v3';
+const CACHE_NAME = 'chuanxun-v4';
 
 // 需要预缓存的核心资源（离线可用）
 const PRECACHE_URLS = [
@@ -56,6 +56,20 @@ self.addEventListener('fetch', event => {
   // 跳过非 GET 请求和 chrome-extension
   if (event.request.method !== 'GET') return;
   if (url.protocol === 'chrome-extension:') return;
+
+  // 页面导航 / HTML：网络优先，离线回退缓存（避免发版后需刷新两次）
+  if (url.origin === self.location.origin && (event.request.mode === 'navigate' || url.pathname === '/' || url.pathname === '/index.html')) {
+    event.respondWith(
+      fetch(event.request).then(response => {
+        if (response && response.status === 200) {
+          const responseClone = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(event.request, responseClone));
+        }
+        return response;
+      }).catch(() => caches.match(event.request).then(cached => cached || caches.match('/index.html')))
+    );
+    return;
+  }
 
   // 本地资源：缓存优先，网络兜底
   if (url.origin === self.location.origin) {
