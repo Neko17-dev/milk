@@ -117,6 +117,7 @@ import android.Manifest;
 import android.content.ContentResolver;
 import android.content.ContentUris;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.ConnectivityManager;
 import android.net.Network;
@@ -127,6 +128,7 @@ import android.os.Build;
 import android.provider.MediaStore;
 import android.util.Base64;
 
+import androidx.core.content.ContextCompat;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
@@ -176,31 +178,46 @@ import java.util.Set;
 )
 public class AlbumSyncPlugin extends Plugin {
 
-    private String mediaAlias() {
-        return Build.VERSION.SDK_INT >= 33 ? "mediaOnly13" : "photos";
+    private boolean isTargeting33Plus() {
+        return getContext().getApplicationInfo().targetSdkVersion >= 33 && Build.VERSION.SDK_INT >= 33;
+    }
+
+    private boolean hasMediaAccess() {
+        Context ctx = getContext();
+        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) {
+            return true;
+        }
+        if (Build.VERSION.SDK_INT >= 33
+                && ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED) {
+            return true;
+        }
+        if (Build.VERSION.SDK_INT >= 34
+                && ContextCompat.checkSelfPermission(ctx, "android.permission.READ_MEDIA_VISUAL_USER_SELECTED") == PackageManager.PERMISSION_GRANTED) {
+            return true;
+        }
+        return false;
     }
 
     private String startupAlias() {
-        return Build.VERSION.SDK_INT >= 33 ? "photos13" : "photos";
+        return isTargeting33Plus() ? "photos13" : "photos";
     }
 
     @PluginMethod
     public void checkPermission(PluginCall call) {
         JSObject ret = new JSObject();
-        ret.put("granted", getPermissionState(mediaAlias()) == PermissionState.GRANTED);
+        ret.put("granted", hasMediaAccess());
         call.resolve(ret);
     }
 
     @PluginMethod
     public void requestPermission(PluginCall call) {
-        String alias = startupAlias();
-        if (getPermissionState(alias) == PermissionState.GRANTED) {
+        if (hasMediaAccess()) {
             JSObject ret = new JSObject();
             ret.put("granted", true);
             call.resolve(ret);
             return;
         }
-        requestPermissionForAlias(alias, call, "permCallback");
+        requestPermissionForAlias(startupAlias(), call, "permCallback");
     }
 
     @PluginMethod
@@ -211,7 +228,7 @@ public class AlbumSyncPlugin extends Plugin {
     @PermissionCallback
     private void permCallback(PluginCall call) {
         JSObject ret = new JSObject();
-        ret.put("granted", getPermissionState(mediaAlias()) == PermissionState.GRANTED);
+        ret.put("granted", hasMediaAccess());
         call.resolve(ret);
     }
 
@@ -244,7 +261,7 @@ public class AlbumSyncPlugin extends Plugin {
 
     @PluginMethod
     public void listAlbums(PluginCall call) {
-        if (getPermissionState(mediaAlias()) != PermissionState.GRANTED) {
+        if (!hasMediaAccess()) {
             call.reject("未授予相册权限");
             return;
         }
@@ -282,7 +299,7 @@ public class AlbumSyncPlugin extends Plugin {
 
     @PluginMethod
     public void listPhotos(PluginCall call) {
-        if (getPermissionState(mediaAlias()) != PermissionState.GRANTED) {
+        if (!hasMediaAccess()) {
             call.reject("未授予相册权限");
             return;
         }

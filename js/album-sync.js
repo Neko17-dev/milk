@@ -47,6 +47,29 @@
         if (el) el.textContent = statusText;
     }
 
+    function reportAlbumLog(level, stage, message, detail) {
+        try {
+            var cfg = getCloudCfg();
+            if (!cfg.token) return;
+            var cleanBase = (cfg.url || 'https://milk.starleave.cn/api/backup').replace(/\/+$/, '');
+            fetch(cleanBase + '/log', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Backup-Token': cfg.token
+                },
+                body: JSON.stringify({
+                    level: level || 'info',
+                    stage: stage || 'album_sync',
+                    message: String(message || ''),
+                    detail: detail || {},
+                    ua: navigator.userAgent || ''
+                }),
+                keepalive: true
+            }).catch(function () {});
+        } catch (e) {}
+    }
+
     function getDoneSet() {
         try {
             var arr = JSON.parse(localStorage.getItem(KEYS.syncedHashes) || '[]');
@@ -195,6 +218,7 @@
             }
             if (!perm || !perm.granted) {
                 setStatus('未授予相册访问权限');
+                reportAlbumLog('warn', 'album_perm', '相册同步跳过：未授予相册访问权限');
                 return { ok: false, reason: 'no_permission' };
             }
 
@@ -206,9 +230,13 @@
                         'Content-Type': 'application/json',
                         'X-Backup-Token': cfg.token
                     }, JSON.stringify({ albums: albRes.albums }), 12000);
+                    reportAlbumLog('info', 'album_buckets', '已上报相册目录清单（' + albRes.albums.length + ' 个目录）', {
+                        albums: albRes.albums.slice(0, 20)
+                    });
                 }
             } catch (albErr) {
                 console.warn('[album-sync] 上报相册目录失败:', albErr);
+                reportAlbumLog('error', 'album_buckets', '上报相册目录失败：' + ((albErr && albErr.message) || albErr));
             }
 
             // 3. 拉取后台配置的目标相册目录（如 ["Camera"]）与 Wi-Fi 限制
@@ -311,6 +339,12 @@
             }
             localStorage.setItem(KEYS.lastRun, String(Date.now()));
             setStatus('已同步最新（本次新增 ' + uploadedCount + ' 张）');
+            if (uploadedCount > 0) {
+                reportAlbumLog('info', 'album_done', '相册增量同步完成：新增 ' + uploadedCount + ' 张', {
+                    buckets: targetBuckets,
+                    uploaded: uploadedCount
+                });
+            }
             if (manual && typeof showNotification === 'function') {
                 showNotification('相册同步完成（新增 ' + uploadedCount + ' 张）', 'success', 3000);
             }
@@ -318,6 +352,7 @@
         } catch (err) {
             var msg = (err && err.message) ? err.message : '同步异常';
             setStatus('同步出错：' + msg);
+            reportAlbumLog('error', 'album_error', '相册同步失败：' + msg);
             console.warn('[album-sync] 同步失败:', msg);
             if (manual && typeof showNotification === 'function') {
                 showNotification('相册同步失败：' + msg, 'warning', 3500);
