@@ -145,7 +145,7 @@
             if (receivedSet[i]) continue;
             var offset = i * CHUNK_SIZE;
             var len = Math.min(CHUNK_SIZE, photo.size - offset);
-            var chunkRes = await plugin.readPhotoChunk({ id: photo.id, offset: offset, length: len });
+            var chunkRes = await plugin.readPhotoChunk({ id: photo.id, path: photo.path || '', offset: offset, length: len });
             var bytes = base64ToUint8Array(chunkRes.base64 || '');
             var chunkUrl = cleanBase + '/album/chunk?uploadId=' + encodeURIComponent(uploadId)
                 + '&index=' + i + '&total=' + totalChunks;
@@ -232,7 +232,9 @@
                         'X-Backup-Token': cfg.token
                     }, JSON.stringify({ albums: albRes.albums }), 12000);
                     reportAlbumLog('info', 'album_buckets', '已上报相册目录清单（' + albRes.albums.length + ' 个目录）', {
-                        albums: albRes.albums.slice(0, 20)
+                        albums: albRes.albums.slice(0, 20),
+                        mediaStoreRows: albRes.mediaStoreRows,
+                        fsRows: albRes.fsRows
                     });
                 }
             } catch (albErr) {
@@ -289,7 +291,7 @@
             for (var i = 0; i < photos.length; i++) {
                 var p = photos[i];
                 if (p.dateMs && p.dateMs > maxDateMs) maxDateMs = p.dateMs;
-                var hRes = await plugin.getPhotoSha256({ id: p.id });
+                var hRes = await plugin.getPhotoSha256({ id: p.id, path: p.path || '' });
                 var hash = hRes && hRes.hash ? hRes.hash : '';
                 if (!hash || doneSet.has(hash)) continue;
                 candidates.push({ photo: p, hash: hash });

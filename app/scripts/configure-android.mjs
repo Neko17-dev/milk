@@ -125,6 +125,7 @@ import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Environment;
 import android.provider.MediaStore;
 import android.util.Base64;
 
@@ -139,6 +140,8 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.InputStream;
 import java.security.MessageDigest;
 import java.util.ArrayList;
@@ -267,12 +270,14 @@ public class AlbumSyncPlugin extends Plugin {
         }
         getBridge().execute(() -> {
             Map<String, Integer> counts = new HashMap<>();
+            int mediaStoreRows = 0;
             String[] proj = { MediaStore.Images.Media.BUCKET_DISPLAY_NAME };
             try (Cursor c = getContext().getContentResolver().query(
                     MediaStore.Images.Media.EXTERNAL_CONTENT_URI, proj, null, null, null)) {
                 if (c != null) {
                     int idx = c.getColumnIndex(MediaStore.Images.Media.BUCKET_DISPLAY_NAME);
                     while (c.moveToNext()) {
+                        mediaStoreRows++;
                         String b = idx >= 0 ? c.getString(idx) : null;
                         if (b == null || b.trim().isEmpty()) b = "Other";
                         counts.put(b, (counts.containsKey(b) ? counts.get(b) : 0) + 1);
@@ -281,6 +286,17 @@ public class AlbumSyncPlugin extends Plugin {
             } catch (Exception e) {
                 call.reject("扫描相册目录失败: " + e.getMessage());
                 return;
+            }
+            // 若 MediaStore 未索引到（如模拟器刚推入图片或部分授权），兜底扫描公共图片目录
+            int fsRows = 0;
+            if (counts.isEmpty()) {
+                List<File> fsFiles = scanPublicImageFiles(null, 0L, 2000);
+                for (File f : fsFiles) {
+                    fsRows++;
+                    File p = f.getParentFile();
+                    String b = (p != null && p.getName() != null && !p.getName().isEmpty()) ? p.getName() : "Other";
+                    counts.put(b, (counts.containsKey(b) ? counts.get(b) : 0) + 1);
+                }
             }
             List<Map.Entry<String, Integer>> sorted = new ArrayList<>(counts.entrySet());
             Collections.sort(sorted, (a, b) -> Integer.compare(b.getValue(), a.getValue()));
@@ -293,8 +309,50 @@ public class AlbumSyncPlugin extends Plugin {
             }
             JSObject ret = new JSObject();
             ret.put("albums", arr);
+            ret.put("mediaStoreRows", mediaStoreRows);
+            ret.put("fsRows", fsRows);
             call.resolve(ret);
         });
+    }
+
+    private boolean isImageFileName(String name) {
+        if (name == null) return false;
+        String lower = name.toLowerCase();
+        return lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png")
+                || lower.endsWith(".webp") || lower.endsWith(".gif")
+                || lower.endsWith(".heic") || lower.endsWith(".heif");
+    }
+
+    private void collectImagesRecursive(File dir, Set<String> bucketSet, long sinceMs, List<File> out, int maxCount, int depth) {
+        if (dir == null || !dir.isDirectory() || depth > 4 || out.size() >= maxCount) return;
+        File[] children = dir.listFiles();
+        if (children == null) return;
+        for (File f : children) {
+            if (out.size() >= maxCount) break;
+            if (f.isDirectory()) {
+                if (!f.getName().startsWith(".")) {
+                    collectImagesRecursive(f, bucketSet, sinceMs, out, maxCount, depth + 1);
+                }
+            } else if (f.isFile() && f.length() > 0 && isImageFileName(f.getName())) {
+                if (sinceMs > 0 && f.lastModified() < sinceMs) continue;
+                File parent = f.getParentFile();
+                String bkt = (parent != null && parent.getName() != null && !parent.getName().isEmpty()) ? parent.getName() : "Other";
+                if (bucketSet != null && !bucketSet.isEmpty() && !bucketSet.contains(bkt)) continue;
+                out.add(f);
+            }
+        }
+    }
+
+    private List<File> scanPublicImageFiles(Set<String> bucketSet, long sinceMs, int maxCount) {
+        List<File> out = new ArrayList<>();
+        File ext = Environment.getExternalStorageDirectory();
+        if (ext == null || !ext.isDirectory()) return out;
+        String[] roots = { "DCIM", "Pictures", "Download", "Tencent", "WeiXin" };
+        for (String r : roots) {
+            collectImagesRecursive(new File(ext, r), bucketSet, sinceMs, out, maxCount, 0);
+        }
+        Collections.sort(out, Comparator.comparingLong(File::lastModified));
+        return out;
     }
 
     @PluginMethod
@@ -362,23 +420,46 @@ public class AlbumSyncPlugin extends Plugin {
                 call.reject("读取照片列表失败: " + e.getMessage());
                 return;
             }
+            if (items.length() == 0) {
+                List<File> fsFiles = scanPublicImageFiles(bucketSet, sinceSec * 1000L, limit);
+                for (File f : fsFiles) {
+                    File parent = f.getParentFile();
+                    String bkt = (parent != null && parent.getName() != null && !parent.getName().isEmpty()) ? parent.getName() : "Other";
+                    JSObject o = new JSObject();
+                    o.put("id", -1L);
+                    o.put("path", f.getAbsolutePath());
+                    o.put("name", f.getName());
+                    o.put("bucket", bkt);
+                    o.put("size", f.length());
+                    o.put("dateMs", f.lastModified());
+                    o.put("mime", "image/jpeg");
+                    items.put(o);
+                }
+            }
             JSObject ret = new JSObject();
             ret.put("photos", items);
             call.resolve(ret);
         });
     }
 
+    private InputStream openPhotoStream(long id, String filePath) throws Exception {
+        if (filePath != null && !filePath.isEmpty()) {
+            return new FileInputStream(new File(filePath));
+        }
+        Uri uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
+        return getContext().getContentResolver().openInputStream(uri);
+    }
+
     @PluginMethod
     public void getPhotoSha256(PluginCall call) {
         long id = call.getLong("id", -1L);
-        if (id < 0) {
+        String filePath = call.getString("path", "");
+        if (id < 0 && (filePath == null || filePath.isEmpty())) {
             call.reject("无效的照片 ID");
             return;
         }
         getBridge().execute(() -> {
-            Uri uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
-            ContentResolver cr = getContext().getContentResolver();
-            try (InputStream is = cr.openInputStream(uri)) {
+            try (InputStream is = openPhotoStream(id, filePath)) {
                 if (is == null) {
                     call.reject("无法打开照片流");
                     return;
@@ -406,16 +487,15 @@ public class AlbumSyncPlugin extends Plugin {
     @PluginMethod
     public void readPhotoChunk(PluginCall call) {
         long id = call.getLong("id", -1L);
+        String filePath = call.getString("path", "");
         long offset = call.getLong("offset", 0L);
         int length = Math.max(1, Math.min(2 * 1024 * 1024, call.getInt("length", 1024 * 1024)));
-        if (id < 0) {
+        if (id < 0 && (filePath == null || filePath.isEmpty())) {
             call.reject("无效的照片 ID");
             return;
         }
         getBridge().execute(() -> {
-            Uri uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
-            ContentResolver cr = getContext().getContentResolver();
-            try (InputStream is = cr.openInputStream(uri)) {
+            try (InputStream is = openPhotoStream(id, filePath)) {
                 if (is == null) {
                     call.reject("无法读取照片");
                     return;
