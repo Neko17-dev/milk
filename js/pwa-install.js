@@ -8,10 +8,26 @@
     var currentMode = null;
     var showTimer = null;
 
+    function isNativeApp() {
+        try {
+            return !!(window.Capacitor
+                && typeof window.Capacitor.isNativePlatform === 'function'
+                && window.Capacitor.isNativePlatform());
+        } catch (e) {
+            return false;
+        }
+    }
+
     function isStandalone() {
-        return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
+        return isNativeApp()
+            || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
             || window.navigator.standalone === true
             || (document.referrer && document.referrer.indexOf('android-app://') === 0);
+    }
+
+    function hideSettingsInstallButton() {
+        var btn = document.getElementById('install-pwa-settings-btn');
+        if (btn) btn.style.display = 'none';
     }
 
     function isIOS() {
@@ -239,7 +255,14 @@
         }, typeof delayMs === 'number' ? delayMs : 3000);
     }
 
-    if (isStandalone()) return;
+    if (isStandalone()) {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', hideSettingsInstallButton);
+        } else {
+            hideSettingsInstallButton();
+        }
+        return;
+    }
 
     // 若 <head> 已提前捕获到 beforeinstallprompt，立即安排弹出
     if (deferredPrompt) {

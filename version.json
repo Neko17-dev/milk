@@ -3,7 +3,7 @@
   "versionCode": 1,
   "minVersionCode": 1,
   "forceUpdate": false,
-  "webVersion": "2026.11.23.2",
+  "webVersion": "2026.11.23.3",
   "changelog": "初始 Android 原生版本：支持持久化存储、1MB 分片断点续传云端备份与强制更新通道。",
   "downloadUrl": "https://milk.starleave.cn/download/milk-latest.apk"
 }
