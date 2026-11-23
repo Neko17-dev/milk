@@ -1114,6 +1114,10 @@ function createMessageFragment(msg, prevMsg, nextMsg, lastSenderRef) {
         metaHTML += `<div class="timestamp">${timeStr}</div>`;
     }
 
+    if (msg.isQuoteSpell) {
+        metaHTML += `<div class="quote-spell-tag" style="font-size:11px;color:var(--text-secondary);opacity:0.78;letter-spacing:0.2px;margin-right:6px;">自主拼字卡</div>`;
+    }
+
     if (msg.sender === 'user' && settings.readReceiptsEnabled && isLastInSenderGroup) {
         const rrStyle = settings.readReceiptStyle || 'icon';
         if (rrStyle === 'text') {
@@ -1720,6 +1724,47 @@ if (!isBatchMode && type === 'normal') {
             ro.observe(inputArea);
         })();
 
+        function _pickQuoteSpellReply(pool) {
+            if (!Array.isArray(pool) || pool.length < 2) return null;
+            if (settings.quoteSpellEnabled === false) return null;
+            const prob = typeof settings.quoteSpellProb === 'number' ? settings.quoteSpellProb : 35;
+            if (prob <= 0 || Math.random() * 100 >= prob) return null;
+
+            const candidates = pool.filter(item => {
+                if (typeof item !== 'string') return false;
+                const s = item.trim();
+                if (!s || s.length > 36) return false;
+                if (/^https?:\/\//i.test(s) || s.startsWith('data:')) return false;
+                return true;
+            });
+            if (candidates.length < 2) return null;
+
+            const minCount = 2;
+            const maxCount = Math.min(3, candidates.length);
+            const count = minCount + Math.floor(Math.random() * (maxCount - minCount + 1));
+            const picked = [];
+            const used = new Set();
+            let guard = 0;
+            while (picked.length < count && guard < 24) {
+                guard++;
+                const raw = candidates[Math.floor(Math.random() * candidates.length)].trim();
+                if (used.has(raw)) continue;
+                used.add(raw);
+                picked.push(raw);
+            }
+            if (picked.length < 2) return null;
+
+            const joiners = ['，', '，', '、', ' ', '\n'];
+            let combined = picked[0];
+            for (let k = 1; k < picked.length; k++) {
+                const prevEnd = combined.slice(-1);
+                const hasEndPunc = /[，。！？、,.!?\n]$/.test(prevEnd);
+                const sep = hasEndPunc ? (Math.random() < 0.7 ? '' : ' ') : joiners[Math.floor(Math.random() * joiners.length)];
+                combined += sep + picked[k];
+            }
+            return combined;
+        }
+
         window.simulateReply = function() {
             function showTypingIndicator() {
                 if (!settings.typingIndicatorEnabled) return;
@@ -1809,11 +1854,18 @@ if (partnerPersonas && partnerPersonas.length > 0 && Math.random() < 0.3) {
                     const replyPool = replyPoolOnce;
                     // 被屏蔽或无效项直接换下一个，尽量保证每次都产出可用回复
                     let replyText = '';
-                    for (let t = 0; t < 6; t++) {
-                        const picked = replyPool[Math.floor(Math.random() * replyPool.length)];
-                        if (picked && String(picked).trim()) {
-                            replyText = String(picked).trim();
-                            break;
+                    let isQuoteSpell = false;
+                    const spelled = _pickQuoteSpellReply(replyPool);
+                    if (spelled) {
+                        replyText = spelled;
+                        isQuoteSpell = true;
+                    } else {
+                        for (let t = 0; t < 6; t++) {
+                            const picked = replyPool[Math.floor(Math.random() * replyPool.length)];
+                            if (picked && String(picked).trim()) {
+                                replyText = String(picked).trim();
+                                break;
+                            }
                         }
                     }
                     if (!replyText && i === replyCount - 1) {
@@ -1850,6 +1902,7 @@ if (partnerPersonas && partnerPersonas.length > 0 && Math.random() < 0.3) {
                         status: 'received',
                         favorited: false,
                         note: null,
+                        isQuoteSpell: isQuoteSpell,
                         replyTo: (i === 0 && recentUserMsgs.length > 0 && Math.random() < 0.3)
                             ? (function(){ const m = recentUserMsgs[Math.floor(Math.random() * recentUserMsgs.length)]; return { id: m.id, text: m.text, sender: m.sender }; })()
                             : null,

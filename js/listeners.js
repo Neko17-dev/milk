@@ -1032,7 +1032,8 @@ if (_chatSettingsEl) _chatSettingsEl.addEventListener('click', () => {
                 '#typing-indicator-toggle': {
                     prop: 'typingIndicatorEnabled', name: '正在输入'},
                     '#read-no-reply-toggle': { prop: 'allowReadNoReply', name: '已读不回' },
-                    '#emoji-mix-toggle': { prop: 'emojiMixEnabled', name: '表情混入消息' }
+                    '#emoji-mix-toggle': { prop: 'emojiMixEnabled', name: '表情混入消息' },
+                    '#quote-spell-toggle': { prop: 'quoteSpellEnabled', name: '自主拼字卡' }
 };
 
             for (const [selector, {
@@ -1041,11 +1042,11 @@ if (_chatSettingsEl) _chatSettingsEl.addEventListener('click', () => {
                 const element = document.querySelector(selector);
                 if (!element) continue;
 
-                const _initVal = prop === 'emojiMixEnabled' ? (settings[prop] !== false) : !!settings[prop];
+                const _initVal = (prop === 'emojiMixEnabled' || prop === 'quoteSpellEnabled') ? (settings[prop] !== false) : !!settings[prop];
                 element.classList.toggle('active', _initVal);
 
                 element.addEventListener('click', () => {
-                    if (prop === 'emojiMixEnabled' && settings[prop] === undefined) settings[prop] = true;
+                    if ((prop === 'emojiMixEnabled' || prop === 'quoteSpellEnabled') && settings[prop] === undefined) settings[prop] = true;
                     settings[prop] = !settings[prop];
                     throttledSaveData();
                     updateUI();
@@ -1056,6 +1057,19 @@ if (_chatSettingsEl) _chatSettingsEl.addEventListener('click', () => {
             }
 
             const soundVolSlider = document.getElementById('sound-volume-slider');
+            const quoteSpellSlider = document.getElementById('quote-spell-prob-slider');
+            const quoteSpellVal = document.getElementById('quote-spell-prob-value');
+            if (quoteSpellSlider) {
+                const initProb = typeof settings.quoteSpellProb === 'number' ? settings.quoteSpellProb : 35;
+                quoteSpellSlider.value = initProb;
+                if (quoteSpellVal) quoteSpellVal.textContent = initProb + '%';
+                quoteSpellSlider.addEventListener('input', (e) => {
+                    const v = parseInt(e.target.value, 10);
+                    settings.quoteSpellProb = isNaN(v) ? 35 : v;
+                    if (quoteSpellVal) quoteSpellVal.textContent = settings.quoteSpellProb + '%';
+                });
+                quoteSpellSlider.addEventListener('change', throttledSaveData);
+            }
             const soundVolVal = document.getElementById('sound-volume-value');
             if (soundVolSlider) {
                 soundVolSlider.value = Math.round((settings.soundVolume || 0.15) * 100);
