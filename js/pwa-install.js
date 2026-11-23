@@ -28,6 +28,10 @@
     function hideSettingsInstallButton() {
         var btn = document.getElementById('install-pwa-settings-btn');
         if (btn) btn.style.display = 'none';
+        if (isNativeApp()) {
+            var apkBtn = document.getElementById('download-apk-settings-btn');
+            if (apkBtn) apkBtn.style.display = 'none';
+        }
     }
 
     function isIOS() {

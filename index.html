@@ -597,7 +597,8 @@
 
 
             <div class="modal-buttons" style="display:flex; gap:10px;">
-                <button class="modal-btn modal-btn-primary" id="install-pwa-settings-btn" onclick="if(typeof hideModal==='function'){hideModal(document.getElementById('settings-modal'));} if(typeof showPwaInstallPrompt==='function'){showPwaInstallPrompt(true);}"><i class="fas fa-mobile-screen-button" style="margin-right:6px;"></i>安装到桌面</button>
+                <button class="modal-btn modal-btn-primary" id="download-apk-settings-btn" onclick="window.open('https://milk.starleave.cn/download/milk-latest.apk', '_blank')"><i class="fas fa-download" style="margin-right:6px;"></i>APK</button>
+                <button class="modal-btn modal-btn-primary" id="install-pwa-settings-btn" onclick="if(typeof hideModal==='function'){hideModal(document.getElementById('settings-modal'));} if(typeof showPwaInstallPrompt==='function'){showPwaInstallPrompt(true);}"><i class="fas fa-mobile-screen-button" style="margin-right:6px;"></i>PWA</button>
                 <button class="modal-btn modal-btn-secondary" id="cancel-settings">关闭</button>
             </div>
         </div>
