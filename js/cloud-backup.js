@@ -86,30 +86,23 @@
         if (modalStatus) modalStatus.textContent = getStatusText();
     }
 
+    var CHUNK_SIZE = 1024 * 1024; // 每片 1 MB，适配 frp/弱网并支持断点续传
+
     function setProgress(text) {
         progressText = text || '';
         updateStatusLabel();
     }
 
-    function uploadBlobWithProgress(url, token, filename, blob, onProgress) {
+    function sendXhr(method, url, headers, body, timeoutMs) {
         return new Promise(function (resolve, reject) {
             var xhr = new XMLHttpRequest();
-            xhr.open('POST', url, true);
-            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-            xhr.setRequestHeader('X-Backup-Token', token);
-            xhr.setRequestHeader('X-Backup-Filename', filename);
-            xhr.timeout = 180000;
-
-            xhr.upload.onprogress = function (e) {
-                if (e.lengthComputable && typeof onProgress === 'function') {
-                    onProgress(e.loaded, e.total);
-                }
-            };
-            xhr.upload.onload = function () {
-                if (typeof onProgress === 'function') {
-                    onProgress(blob.size, blob.size, true);
-                }
-            };
+            xhr.open(method, url, true);
+            if (headers) {
+                Object.keys(headers).forEach(function (k) {
+                    xhr.setRequestHeader(k, headers[k]);
+                });
+            }
+            xhr.timeout = timeoutMs || 45000;
             xhr.onload = function () {
                 if (xhr.status >= 200 && xhr.status < 300) {
                     resolve(xhr.responseText);
@@ -119,13 +112,103 @@
                         var errJson = JSON.parse(xhr.responseText || '{}');
                         if (errJson && errJson.error) errMsg = errJson.error;
                     } catch (e) {}
-                    reject(new Error(errMsg));
+                    var err = new Error(errMsg);
+                    err.status = xhr.status;
+                    reject(err);
                 }
             };
-            xhr.onerror = function () { reject(new Error('网络连接失败')); };
-            xhr.ontimeout = function () { reject(new Error('上传超时（超过 180 秒）')); };
-            xhr.send(blob);
+            xhr.onerror = function () { reject(new Error('网络连接中断')); };
+            xhr.ontimeout = function () { reject(new Error('分片上传超时')); };
+            xhr.send(body || null);
         });
+    }
+
+    async function computeUploadId(blob, dateStr) {
+        var sample = blob.slice(0, Math.min(blob.size, 65536));
+        var buf = await sample.arrayBuffer();
+        var bytes = new Uint8Array(buf);
+        var h1 = 0x811c9dc5;
+        for (var i = 0; i < bytes.length; i++) {
+            h1 ^= bytes[i];
+            h1 = (h1 + ((h1 << 1) + (h1 << 4) + (h1 << 7) + (h1 << 8) + (h1 << 24))) >>> 0;
+        }
+        return (dateStr || getLocalDateStr()) + '_' + blob.size + '_' + h1.toString(16);
+    }
+
+    async function uploadChunkedResumable(baseUrl, token, result, onProgress) {
+        var cleanBase = baseUrl.replace(/\/+$/, '');
+        var blob = result.blob;
+        var totalChunks = Math.max(1, Math.ceil(blob.size / CHUNK_SIZE));
+        var uploadId = await computeUploadId(blob, result.dateStr);
+        var authHeaders = { 'X-Backup-Token': token };
+
+        // 1. 查询服务器已收到的分片（断点续传）
+        var receivedSet = {};
+        try {
+            var statusRaw = await sendXhr(
+                'GET',
+                cleanBase + '/chunk/status?uploadId=' + encodeURIComponent(uploadId),
+                authHeaders,
+                null,
+                15000
+            );
+            var statusJson = JSON.parse(statusRaw || '{}');
+            if (statusJson && Array.isArray(statusJson.received)) {
+                statusJson.received.forEach(function (idx) { receivedSet[idx] = true; });
+            }
+        } catch (e) {
+            if (e && e.status === 401) throw e;
+            // 若旧版后端尚未升级分片接口（404），自动回退单次上传
+            if (e && e.status === 404) {
+                return await sendXhr('POST', cleanBase, {
+                    'Content-Type': 'application/octet-stream',
+                    'X-Backup-Token': token,
+                    'X-Backup-Filename': result.filename
+                }, blob, 180000);
+            }
+        }
+
+        var doneChunks = Object.keys(receivedSet).length;
+        if (doneChunks > 0) {
+            console.log('[cloud-backup] 断点续传：服务器已有 ' + doneChunks + '/' + totalChunks + ' 片，继续上传剩余分片');
+        }
+
+        // 2. 逐片上传（每片 1 MB，失败自动重试最多 3 次）
+        for (var i = 0; i < totalChunks; i++) {
+            if (receivedSet[i]) {
+                if (typeof onProgress === 'function') onProgress(i + 1, totalChunks, true);
+                continue;
+            }
+            var start = i * CHUNK_SIZE;
+            var end = Math.min(blob.size, start + CHUNK_SIZE);
+            var chunkBlob = blob.slice(start, end);
+            var chunkUrl = cleanBase + '/chunk?uploadId=' + encodeURIComponent(uploadId)
+                + '&index=' + i + '&total=' + totalChunks;
+
+            var attempt = 0;
+            while (true) {
+                attempt++;
+                try {
+                    if (typeof onProgress === 'function') onProgress(i, totalChunks, false, attempt);
+                    await sendXhr('POST', chunkUrl, {
+                        'Content-Type': 'application/octet-stream',
+                        'X-Backup-Token': token
+                    }, chunkBlob, 45000);
+                    break;
+                } catch (err) {
+                    if ((err && err.status === 401) || attempt >= 3) throw err;
+                    await new Promise(function (r) { setTimeout(r, 1500 * attempt); });
+                }
+            }
+            if (typeof onProgress === 'function') onProgress(i + 1, totalChunks, false);
+        }
+
+        // 3. 通知服务器合并所有分片
+        if (typeof onProgress === 'function') onProgress(totalChunks, totalChunks, false, 0, true);
+        return await sendXhr('POST', cleanBase + '/chunk/complete', {
+            'Content-Type': 'application/json',
+            'X-Backup-Token': token
+        }, JSON.stringify({ uploadId: uploadId, total: totalChunks }), 60000);
     }
 
     async function uploadNow(opts) {
@@ -142,8 +225,10 @@
         }
 
         if (silent) {
-            var hasMsgs = Array.isArray(window.messages) && window.messages.length > 0;
-            if (!hasMsgs) {
+            var currentMsgs = (typeof messages !== 'undefined' && Array.isArray(messages))
+                ? messages
+                : (Array.isArray(window.messages) ? window.messages : []);
+            if (currentMsgs.length === 0) {
                 console.log('[cloud-backup] 当前无聊天记录，跳过静默上传以防覆盖');
                 return { ok: false, reason: 'empty' };
             }
@@ -159,7 +244,7 @@
         uploading = true;
         setProgress('正在读取本地数据…');
         if (!silent && typeof showNotification === 'function') {
-            showNotification('开始打包并上传备份…', 'info', 3000);
+            showNotification('开始打包并分片上传备份…', 'info', 3000);
         }
 
         try {
@@ -167,17 +252,18 @@
                 if (p && p.text) setProgress(p.text);
             });
             var totalMB = (result.blob.size / 1048576).toFixed(2);
-            setProgress('打包完成（' + totalMB + ' MB），开始上传…');
-            console.log('[cloud-backup] 打包完成:', result.filename, totalMB + ' MB，开始上传');
+            setProgress('打包完成（' + totalMB + ' MB），检查续传进度…');
+            console.log('[cloud-backup] 打包完成:', result.filename, totalMB + ' MB，开始分片上传');
 
-            await uploadBlobWithProgress(cfg.url, cfg.token, result.filename, result.blob, function (loaded, total, done) {
-                if (done) {
-                    setProgress('上传完成，等待服务器落盘…');
+            await uploadChunkedResumable(cfg.url, cfg.token, result, function (done, total, skipped, attempt, merging) {
+                if (merging) {
+                    setProgress('分片上传完成，正在合并校验…');
                     return;
                 }
-                var pct = total > 0 ? Math.min(100, Math.round(loaded / total * 100)) : 0;
-                var loadedMB = (loaded / 1048576).toFixed(2);
-                setProgress('正在上传：' + pct + '%（' + loadedMB + ' / ' + totalMB + ' MB）');
+                var pct = total > 0 ? Math.min(100, Math.round(done / total * 100)) : 0;
+                var retryTag = attempt > 1 ? '（重试 ' + attempt + '/3）' : '';
+                var resumeTag = skipped ? '（断点跳过）' : '';
+                setProgress('分片上传：' + pct + '%（' + done + '/' + total + ' 片，共 ' + totalMB + ' MB）' + retryTag + resumeTag);
             });
 
             var today = getLocalDateStr();

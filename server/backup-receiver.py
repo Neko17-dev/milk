@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 极简备份接收服务（仅使用 Python 3 标准库，零外部依赖）
-支持单用户（BACKUP_TOKEN）与多用户分目录隔离（BACKUP_TOKENS / BACKUP_TOKENS_FILE）。
-每个用户凭各自专属 Token 上传与拉取，互不可见、互不覆盖。
+- 支持单用户（BACKUP_TOKEN）与多用户分目录隔离（BACKUP_TOKENS / BACKUP_TOKENS_FILE）
+- 支持普通单次上传（POST /api/backup）与 1MB 分片断点续传（/api/backup/chunk*）
 """
 
 import datetime
@@ -16,7 +16,7 @@ import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 HOST = os.environ.get("BACKUP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("BACKUP_PORT", "8787"))
@@ -25,21 +25,15 @@ BACKUP_TOKEN = os.environ.get("BACKUP_TOKEN", "").strip()
 BACKUP_TOKENS_RAW = os.environ.get("BACKUP_TOKENS", "").strip()
 BACKUP_TOKENS_FILE = os.environ.get("BACKUP_TOKENS_FILE", "").strip()
 MAX_BYTES = int(os.environ.get("BACKUP_MAX_MB", "200")) * 1024 * 1024
+MAX_CHUNK_BYTES = 8 * 1024 * 1024
 KEEP_DAYS = int(os.environ.get("BACKUP_KEEP_DAYS", "30"))
 
 USER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+UPLOAD_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,80}$")
 BACKUP_FILE_RE = re.compile(r"^chatapp-backup-\d{4}-\d{2}-\d{2}\.(zip|json)$")
 
 
 def load_user_tokens() -> Tuple[Dict[str, str], bool]:
-    """
-    返回 (user_id -> token 映射, 是否为多用户模式)。
-    多用户模式支持：
-    1. 环境变量 BACKUP_TOKENS="alice:tok1,bob:tok2"
-    2. JSON 文件 BACKUP_TOKENS_FILE='{"alice":"tok1","bob":"tok2"}'
-    单用户兼容：
-    - 仅设置 BACKUP_TOKEN 时，直接存放在 BACKUP_DIR 根目录。
-    """
     users: Dict[str, str] = {}
 
     if BACKUP_TOKENS_FILE:
@@ -85,7 +79,6 @@ MULTI_USER_MODE: bool = False
 
 
 def resolve_user_by_token(token: str) -> Optional[Tuple[str, Path]]:
-    """通过 Token 匹配用户并返回 (user_id, 该用户专属备份目录)。"""
     if not token:
         return None
     matched_uid: Optional[str] = None
@@ -96,7 +89,6 @@ def resolve_user_by_token(token: str) -> Optional[Tuple[str, Path]]:
         return None
     if MULTI_USER_MODE:
         user_dir = (BACKUP_DIR / matched_uid).resolve()
-        # 双重防止路径穿越
         if user_dir.parent != BACKUP_DIR.resolve():
             return None
         return matched_uid, user_dir
@@ -118,10 +110,31 @@ def prune_old_backups(target_dir: Path) -> None:
                     p.unlink()
             except OSError:
                 pass
+    # 清理超过 48 小时的残留分片目录
+    chunks_root = target_dir / ".chunks"
+    if chunks_root.is_dir():
+        chunk_cutoff = datetime.datetime.now().timestamp() - 48 * 3600
+        for d in chunks_root.iterdir():
+            if d.is_dir():
+                try:
+                    if d.stat().st_mtime < chunk_cutoff:
+                        shutil.rmtree(d, ignore_errors=True)
+                except OSError:
+                    pass
+
+
+def get_chunk_dir(user_dir: Path, upload_id: str) -> Optional[Path]:
+    if not UPLOAD_ID_RE.match(upload_id):
+        return None
+    chunks_root = (user_dir / ".chunks").resolve()
+    chunk_dir = (chunks_root / upload_id).resolve()
+    if chunk_dir.parent != chunks_root:
+        return None
+    return chunk_dir
 
 
 class BackupHandler(BaseHTTPRequestHandler):
-    server_version = "MilkBackup/2.0"
+    server_version = "MilkBackup/2.1"
 
     def _send_json(self, code: int, payload: dict) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -140,16 +153,53 @@ class BackupHandler(BaseHTTPRequestHandler):
             return None
         return resolved
 
+    def _read_body(self, max_bytes: int) -> Optional[bytes]:
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._send_json(400, {"ok": False, "error": "无效的 Content-Length"})
+            return None
+        if content_length <= 0:
+            self._send_json(400, {"ok": False, "error": "空数据"})
+            return None
+        if content_length > max_bytes:
+            self._send_json(413, {"ok": False, "error": f"数据超过上限（{max_bytes // (1024 * 1024)} MB）"})
+            return None
+        data = self.rfile.read(content_length)
+        if len(data) != content_length:
+            self._send_json(400, {"ok": False, "error": "传输中断，数据不完整"})
+            return None
+        return data
+
     def do_GET(self) -> None:
-        path = urlparse(self.path).path.rstrip("/")
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
         if path in ("/api/backup/health", "/health"):
-            self._send_json(200, {"ok": True, "multiUser": MULTI_USER_MODE})
+            self._send_json(200, {"ok": True, "multiUser": MULTI_USER_MODE, "chunked": True})
             return
 
         auth = self._authenticate()
         if not auth:
             return
         user_id, user_dir = auth
+
+        if path in ("/api/backup/chunk/status", "/chunk/status"):
+            qs = parse_qs(parsed.query)
+            upload_id = (qs.get("uploadId") or [""])[0].strip()
+            chunk_dir = get_chunk_dir(user_dir, upload_id)
+            if not chunk_dir:
+                self._send_json(400, {"ok": False, "error": "无效的 uploadId"})
+                return
+            received = []
+            if chunk_dir.is_dir():
+                for p in chunk_dir.iterdir():
+                    if p.is_file() and p.name.endswith(".part"):
+                        stem = p.name[:-5]
+                        if stem.isdigit():
+                            received.append(int(stem))
+            received.sort()
+            self._send_json(200, {"ok": True, "uploadId": upload_id, "received": received})
+            return
 
         if path in ("/api/backup/list", "/list"):
             files = []
@@ -187,30 +237,117 @@ class BackupHandler(BaseHTTPRequestHandler):
         self._send_json(404, {"ok": False, "error": "Not Found"})
 
     def do_POST(self) -> None:
-        path = urlparse(self.path).path.rstrip("/")
-        if path not in ("/api/backup", ""):
-            self._send_json(404, {"ok": False, "error": "Not Found"})
-            return
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
 
         auth = self._authenticate()
         if not auth:
             return
         user_id, user_dir = auth
 
-        try:
-            content_length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            self._send_json(400, {"ok": False, "error": "无效的 Content-Length"})
+        # 分片上传：POST /api/backup/chunk?uploadId=xxx&index=0&total=15
+        if path in ("/api/backup/chunk", "/chunk"):
+            qs = parse_qs(parsed.query)
+            upload_id = (qs.get("uploadId") or [""])[0].strip()
+            try:
+                index = int((qs.get("index") or ["-1"])[0])
+                total = int((qs.get("total") or ["0"])[0])
+            except ValueError:
+                self._send_json(400, {"ok": False, "error": "无效的分片参数"})
+                return
+            chunk_dir = get_chunk_dir(user_dir, upload_id)
+            if not chunk_dir or index < 0 or total <= 0 or index >= total or total > 500:
+                self._send_json(400, {"ok": False, "error": "分片参数越界"})
+                return
+            data = self._read_body(MAX_CHUNK_BYTES)
+            if data is None:
+                return
+            chunk_dir.mkdir(parents=True, exist_ok=True)
+            part_path = chunk_dir / f"{index}.part"
+            fd, tmp_path = tempfile.mkstemp(prefix=".part-", dir=str(chunk_dir))
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(data)
+                os.replace(tmp_path, part_path)
+            except Exception as exc:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                self._send_json(500, {"ok": False, "error": f"分片写入失败: {exc}"})
+                return
+            self._send_json(200, {"ok": True, "index": index, "bytes": len(data)})
             return
 
-        if content_length <= 0:
-            self._send_json(400, {"ok": False, "error": "空文件"})
-            return
-        if content_length > MAX_BYTES:
-            self._send_json(413, {"ok": False, "error": f"文件超过上限（{MAX_BYTES // (1024 * 1024)} MB）"})
+        # 合并分片：POST /api/backup/chunk/complete
+        if path in ("/api/backup/chunk/complete", "/chunk/complete"):
+            body = self._read_body(64 * 1024)
+            if body is None:
+                return
+            try:
+                meta = json.loads(body.decode("utf-8"))
+                upload_id = str(meta.get("uploadId", "")).strip()
+                total = int(meta.get("total", 0))
+            except Exception:
+                self._send_json(400, {"ok": False, "error": "无效的合并参数"})
+                return
+            chunk_dir = get_chunk_dir(user_dir, upload_id)
+            if not chunk_dir or total <= 0 or total > 500 or not chunk_dir.is_dir():
+                self._send_json(400, {"ok": False, "error": "找不到分片目录"})
+                return
+
+            missing = [i for i in range(total) if not (chunk_dir / f"{i}.part").is_file()]
+            if missing:
+                self._send_json(409, {"ok": False, "error": f"缺少分片: {missing[:5]}", "missing": missing})
+                return
+
+            user_dir.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(prefix=".merge-", dir=str(user_dir))
+            total_bytes = 0
+            head_bytes = b""
+            try:
+                with os.fdopen(fd, "wb") as out_f:
+                    for i in range(total):
+                        part_data = (chunk_dir / f"{i}.part").read_bytes()
+                        if i == 0:
+                            head_bytes = part_data[:32]
+                        total_bytes += len(part_data)
+                        if total_bytes > MAX_BYTES:
+                            raise ValueError(f"合并后超过上限（{MAX_BYTES // (1024 * 1024)} MB）")
+                        out_f.write(part_data)
+
+                is_zip = head_bytes[:2] == b"PK"
+                is_json = head_bytes.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"{")
+                if not (is_zip or is_json):
+                    raise ValueError("仅接受 ZIP 或 JSON 备份文件")
+
+                ext = "zip" if is_zip else "json"
+                filename = f"chatapp-backup-{safe_date_str()}.{ext}"
+                dest = user_dir / filename
+                latest = user_dir / f"latest.{ext}"
+                os.replace(tmp_path, dest)
+                shutil.copy2(dest, latest)
+                shutil.rmtree(chunk_dir, ignore_errors=True)
+                prune_old_backups(user_dir)
+            except Exception as exc:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                self._send_json(400, {"ok": False, "error": f"合并失败: {exc}"})
+                return
+
+            self._send_json(200, {"ok": True, "user": user_id, "file": filename, "bytes": total_bytes})
             return
 
-        data = self.rfile.read(content_length)
+        # 兼容单次整包上传：POST /api/backup
+        if path not in ("/api/backup", ""):
+            self._send_json(404, {"ok": False, "error": "Not Found"})
+            return
+
+        data = self._read_body(MAX_BYTES)
+        if data is None:
+            return
         if len(data) < 4:
             self._send_json(400, {"ok": False, "error": "备份文件不完整"})
             return
@@ -222,8 +359,7 @@ class BackupHandler(BaseHTTPRequestHandler):
             return
 
         ext = "zip" if is_zip else "json"
-        date_str = safe_date_str()
-        filename = f"chatapp-backup-{date_str}.{ext}"
+        filename = f"chatapp-backup-{safe_date_str()}.{ext}"
         user_dir.mkdir(parents=True, exist_ok=True)
         dest = user_dir / filename
         latest = user_dir / f"latest.{ext}"
