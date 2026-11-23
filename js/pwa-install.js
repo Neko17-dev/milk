@@ -279,15 +279,30 @@
         }
     });
 
-    // 暴露手动触发入口（可用于设置页或调试）
-    window.showPwaInstallPrompt = function () {
+    // 暴露手动触发入口（设置页按钮直接调用，无视 7 天冷却期）
+    window.showPwaInstallPrompt = function (triggerNativeDirect) {
         if (isStandalone()) {
             if (typeof showNotification === 'function') {
                 showNotification('当前已以桌面应用模式运行', 'info', 2500);
             }
             return;
         }
-        if (deferredPrompt) {
+        var promptEvent = deferredPrompt || window.__deferredPwaPrompt;
+        if (promptEvent) {
+            if (triggerNativeDirect) {
+                deferredPrompt = null;
+                window.__deferredPwaPrompt = null;
+                promptEvent.prompt();
+                if (promptEvent.userChoice && typeof promptEvent.userChoice.then === 'function') {
+                    promptEvent.userChoice.then(function (choice) {
+                        if (choice && choice.outcome === 'accepted') {
+                            hideBanner(false);
+                        }
+                    }).catch(function () {});
+                }
+                return;
+            }
+            deferredPrompt = promptEvent;
             showBanner('native');
         } else if (isIOS()) {
             showBanner('ios');
