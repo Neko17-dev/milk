@@ -79,9 +79,17 @@ jobs:
         working-directory: app
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
             python3 -c 'import os, re, base64; raw = os.environ["ANDROID_KEYSTORE_BASE64"]; cleaned = re.sub(r"\s+", "", raw); cleaned += "=" * (-len(cleaned) % 4); data = base64.b64decode(cleaned, validate=True); assert len(data) >= 100, f"Keystore too small ({len(data)} bytes)"; open("release.keystore", "wb").write(data); print(f"Decoded release.keystore ({len(data)} bytes)")'
+            if [ -z "${ANDROID_KEYSTORE_PASSWORD}" ] || [ -z "${ANDROID_KEY_ALIAS}" ] || [ -z "${ANDROID_KEY_PASSWORD}" ]; then
+              echo "::error::ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD 不能为空，请检查 GitHub Secrets 名称是否拼写正确"
+              exit 1
+            fi
+            keytool -list -keystore release.keystore -storepass "$(echo -n "$ANDROID_KEYSTORE_PASSWORD" | xargs)" -alias "$(echo -n "$ANDROID_KEY_ALIAS" | xargs)" > /dev/null
             echo "has_keystore=true" >> "$GITHUB_OUTPUT"
             echo "keystore_path=$(pwd)/release.keystore" >> "$GITHUB_OUTPUT"
           else
