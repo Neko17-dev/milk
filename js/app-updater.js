@@ -177,20 +177,37 @@
                 return { hasUpdate: true, forced: isForced, remote: remote };
             }
             if (!silent && typeof showNotification === 'function') {
-                showNotification('当前已是最新版本（v' + current.version + '）', 'success', 2500);
+                showNotification('当前已是最新版本（v' + current.version + ' / code ' + current.versionCode + '）', 'success', 3000);
             }
             return { hasUpdate: false, remote: remote };
         } catch (err) {
             console.warn('[app-updater] 检查更新失败:', err);
             if (!silent && typeof showNotification === 'function') {
-                showNotification('检查更新失败，请稍后重试', 'warning', 2500);
+                showNotification('检查更新失败：' + ((err && err.message) || '网络错误'), 'warning', 3500);
             }
             return { hasUpdate: false, error: err };
         }
     }
 
+    function injectSettingsCheckButton() {
+        if (!isNativeApp()) return;
+        var btnContainer = document.querySelector('#settings-modal .modal-buttons');
+        if (!btnContainer || document.getElementById('app-check-update-btn')) return;
+        var current = getCurrentVersion();
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.id = 'app-check-update-btn';
+        btn.className = 'modal-btn modal-btn-primary';
+        btn.textContent = '检查更新 (v' + current.version + ')';
+        btn.addEventListener('click', function () {
+            checkNow({ silent: false });
+        });
+        btnContainer.insertBefore(btn, btnContainer.firstChild);
+    }
+
     // 原生 App 启动后自动检查更新通道
     function scheduleCheck() {
+        injectSettingsCheckButton();
         if (isNativeApp()) {
             setTimeout(function () { checkNow({ silent: true }); }, 1500);
         }

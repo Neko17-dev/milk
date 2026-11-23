@@ -3,7 +3,7 @@
   "versionCode": 3,
   "minVersionCode": 3,
   "forceUpdate": true,
-  "webVersion": "2026.11.23.7",
+  "webVersion": "2026.11.23.8",
   "changelog": "1. 支持手机 HEIC/HEIF 图片自动转码导入表情库\n2. 移除原生 App 内多余的 PWA 安装引导与按钮\n3. 修复更新检测跨域问题",
   "downloadUrl": "https://milk.starleave.cn/download/milk-latest.apk"
 }
