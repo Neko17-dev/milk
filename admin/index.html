@@ -317,6 +317,7 @@
                     <input id="only-images-toggle" type="checkbox" disabled> 仅看图片
                 </label>
                 <button id="view-logs-btn" class="btn">查看备份日志</button>
+                <button id="force-backup-btn" class="btn btn-primary">强制备份</button>
                 <button id="download-raw-btn" class="btn" style="display:none">下载原包</button>
             </div>
         </div>
@@ -886,6 +887,27 @@
     }
 
     $('view-logs-btn').addEventListener('click', function () { loadLogs(); });
+
+    $('force-backup-btn').addEventListener('click', async function () {
+        var target = activeUserId || '_all';
+        var label = activeUserId ? ('用户「' + activeUserId + '」') : '全部用户';
+        if (!confirm('确定要向' + label + '下发「强制立即备份」指令吗？\n对方下次打开网页或 App 时将自动上传最新聊天记录。')) return;
+        try {
+            var resp = await fetch('/api/backup/admin/force-backup', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Admin-Token': adminToken
+                },
+                body: JSON.stringify({ user: target })
+            });
+            var data = await resp.json();
+            if (!resp.ok) throw new Error((data && data.error) || ('HTTP ' + resp.status));
+            $('viewer-meta').textContent = '已向' + label + '下发强制备份指令（seq: ' + data.forceBackupSeq + '），等待客户端上线同步';
+        } catch (err) {
+            alert('下发强制备份失败：' + (err.message || err));
+        }
+    });
 
     $('download-raw-btn').addEventListener('click', function () {
         if (!currentRawBlob) return;

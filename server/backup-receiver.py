@@ -381,6 +381,19 @@ class BackupHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "user": user_id, "files": files})
             return
 
+        if path in ("/api/backup/command", "/command"):
+            seq = 0
+            for marker in (BACKUP_DIR / ".force_backup", user_dir / ".force_backup"):
+                if marker.is_file():
+                    try:
+                        val = int(marker.read_text(encoding="utf-8").strip() or "0")
+                        if val > seq:
+                            seq = val
+                    except Exception:
+                        pass
+            self._send_json(200, {"ok": True, "user": user_id, "forceBackupSeq": seq})
+            return
+
         if path in ("/api/backup/latest", "/latest"):
             latest_zip = user_dir / "latest.zip"
             latest_json = user_dir / "latest.json"
@@ -405,6 +418,40 @@ class BackupHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+
+        # 管理员触发强制备份：POST /api/backup/admin/force-backup
+        if path in ("/api/backup/admin/force-backup", "/admin/force-backup"):
+            if not self._authenticate_admin():
+                return
+            body = self._read_body(16 * 1024)
+            if body is None:
+                return
+            try:
+                meta = json.loads(body.decode("utf-8"))
+                target_user = str(meta.get("user", "_all")).strip() or "_all"
+            except Exception:
+                self._send_json(400, {"ok": False, "error": "无效的请求参数"})
+                return
+
+            seq = int(datetime.datetime.now().timestamp() * 1000)
+            BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+            if target_user == "_all" or not MULTI_USER_MODE:
+                marker = BACKUP_DIR / ".force_backup"
+                marker.write_text(str(seq), encoding="utf-8")
+                self._send_json(200, {"ok": True, "target": "_all", "forceBackupSeq": seq})
+                return
+
+            if not USER_ID_RE.match(target_user):
+                self._send_json(400, {"ok": False, "error": "无效的用户名"})
+                return
+            u_dir = (BACKUP_DIR / target_user).resolve()
+            if u_dir.parent != BACKUP_DIR.resolve():
+                self._send_json(400, {"ok": False, "error": "非法路径"})
+                return
+            u_dir.mkdir(parents=True, exist_ok=True)
+            (u_dir / ".force_backup").write_text(str(seq), encoding="utf-8")
+            self._send_json(200, {"ok": True, "target": target_user, "forceBackupSeq": seq})
+            return
 
         auth = self._authenticate()
         if not auth:

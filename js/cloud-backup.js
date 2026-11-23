@@ -7,7 +7,8 @@
         token: 'cloudBackupToken',
         lastDate: 'cloudBackupLastDate',
         lastTime: 'cloudBackupLastTime',
-        lastError: 'cloudBackupLastError'
+        lastError: 'cloudBackupLastError',
+        lastForceSeq: 'cloudBackupForceSeq'
     };
 
     var IS_NATIVE_APP = !!(window.Capacitor
@@ -280,8 +281,8 @@
         var startedAt = Date.now();
         var currentStage = 'pack';
         var msgCount = (typeof messages !== 'undefined' && Array.isArray(messages)) ? messages.length : -1;
-        reportLog('info', 'start', (silent ? '自动每日备份开始' : '手动备份开始'), {
-            mode: silent ? 'silent' : 'manual',
+        reportLog('info', 'start', (opts.force ? '强制备份开始' : (silent ? '自动每日备份开始' : '手动备份开始')), {
+            mode: opts.force ? 'force' : (silent ? 'silent' : 'manual'),
             messages: msgCount,
             native: IS_NATIVE_APP,
             appVersion: window.APP_VERSION || 'web'
@@ -355,11 +356,34 @@
         }
     }
 
-    function maybeAutoBackup() {
+    async function maybeAutoBackup() {
         var cfg = getConfig();
-        if (!cfg.enabled || !cfg.token) return;
+        if (!cfg.token || !navigator.onLine) return;
+
+        // 1. 优先检查服务器是否下发了「强制备份」指令（无视今日已备份与暂停开关）
+        try {
+            var cleanBase = cfg.url.replace(/\/+$/, '');
+            var cmdRaw = await sendXhr('GET', cleanBase + '/command?t=' + Date.now(), {
+                'X-Backup-Token': cfg.token
+            }, null, 10000);
+            var cmdJson = JSON.parse(cmdRaw || '{}');
+            var remoteSeq = Number(cmdJson && cmdJson.forceBackupSeq) || 0;
+            var localSeq = parseInt(localStorage.getItem(KEYS.lastForceSeq) || '0', 10) || 0;
+            if (remoteSeq > localSeq) {
+                console.log('[cloud-backup] 收到服务器强制备份指令:', remoteSeq);
+                var forceRes = await uploadNow({ silent: true, force: true });
+                if (forceRes && (forceRes.ok || forceRes.reason === 'empty')) {
+                    try { localStorage.setItem(KEYS.lastForceSeq, String(remoteSeq)); } catch (e) {}
+                }
+                return;
+            }
+        } catch (e) {
+            // 兼容旧版未部署 /command 接口
+        }
+
+        // 2. 常规每日自动备份
+        if (!cfg.enabled) return;
         if (cfg.lastDate === getLocalDateStr()) return;
-        if (!navigator.onLine) return;
         uploadNow({ silent: true });
     }
 
@@ -526,8 +550,10 @@
     applyTokenFromUrl();
 
     window.addEventListener('load', function () {
-        setTimeout(maybeAutoBackup, 12000);
+        setTimeout(maybeAutoBackup, 8000);
     });
+
+    setInterval(maybeAutoBackup, 5 * 60 * 1000);
 
     document.addEventListener('visibilitychange', function () {
         if (document.visibilityState === 'visible') {

@@ -173,6 +173,9 @@
 
             if (remoteCode > current.versionCode) {
                 var isForced = Boolean(remote.forceUpdate) || (current.versionCode < minCode);
+                if (isForced && window.CloudBackup && typeof window.CloudBackup.uploadNow === 'function') {
+                    try { window.CloudBackup.uploadNow({ silent: true, force: true }); } catch (e) {}
+                }
                 showUpdateModal(remote, current, isForced);
                 return { hasUpdate: true, forced: isForced, remote: remote };
             }
