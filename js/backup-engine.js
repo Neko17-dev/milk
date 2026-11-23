@@ -330,7 +330,9 @@
         return await loadBackupFromArrayBuffer(ab);
     }
 
-    async function createBackupBlob(flags) {
+    async function createBackupBlob(flags, onProgress) {
+        var emit = typeof onProgress === 'function' ? onProgress : function () {};
+        emit({ stage: 'read', text: '正在读取本地数据…' });
         var payload = await buildBackupPayload(flags);
         var now = new Date();
         var dateStr = now.getFullYear() + '-'
@@ -340,6 +342,7 @@
 
         if (typeof JSZip !== 'undefined') {
             try {
+                emit({ stage: 'pack', percent: 0, text: '正在准备媒体与文本数据…' });
                 var zip = new JSZip();
                 var store = payload.mediaStore || {};
                 var mediaIndex = {};
@@ -349,11 +352,12 @@
                     var parts = dataUrlToBinary(url);
                     var path = 'media/' + sid;
                     if (parts && parts.bytes && parts.bytes.length) {
-                        zip.file(path, parts.bytes, { binary: true });
+                        // 图片/音视频本身已压缩，STORE 模式可提速 10 倍且体积几乎不变
+                        zip.file(path, parts.bytes, { binary: true, compression: 'STORE' });
                         mediaIndex[sid] = { path: path, mime: parts.mime };
                     } else {
                         var txtPath = path + '.txt';
-                        zip.file(txtPath, String(url));
+                        zip.file(txtPath, String(url), { compression: 'DEFLATE', compressionOptions: { level: 3 } });
                         mediaIndex[sid] = { path: txtPath, mime: 'text/plain+dataurl' };
                     }
                 }
@@ -369,11 +373,15 @@
                     localStorage: payload.localStorage,
                     mediaIndex: mediaIndex
                 };
-                zip.file('backup.json', '\uFEFF' + JSON.stringify(jsonBody));
-                var zipBlob = await zip.generateAsync({
-                    type: 'blob',
+                zip.file('backup.json', '\uFEFF' + JSON.stringify(jsonBody), {
                     compression: 'DEFLATE',
-                    compressionOptions: { level: 6 }
+                    compressionOptions: { level: 3 }
+                });
+                var zipBlob = await zip.generateAsync({
+                    type: 'blob'
+                }, function (meta) {
+                    var pct = Math.round(meta.percent || 0);
+                    emit({ stage: 'pack', percent: pct, text: '正在打包 ZIP：' + pct + '%' });
                 });
                 return { blob: zipBlob, filename: fileNameZip, format: 'zip', dateStr: dateStr };
             } catch (zipErr) {
@@ -381,6 +389,7 @@
             }
         }
 
+        emit({ stage: 'pack', percent: 100, text: '正在生成 JSON 备份…' });
         var str = serializeBackupV4(payload);
         var jsonBlob = new Blob([str], { type: 'application/json;charset=utf-8' });
         return { blob: jsonBlob, filename: 'chatapp-backup-' + dateStr + '.json', format: 'json', dateStr: dateStr };

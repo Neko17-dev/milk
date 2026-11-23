@@ -12,6 +12,7 @@
 
     var DEFAULT_URL = '/api/backup';
     var uploading = false;
+    var progressText = '';
 
     function getLocalDateStr(d) {
         var now = d || new Date();
@@ -64,7 +65,7 @@
         var cfg = getConfig();
         if (!cfg.token) return '未配置服务器密钥，点击设置';
         if (!cfg.enabled) return '已暂停自动上传';
-        if (uploading) return '正在打包并上传到服务器…';
+        if (uploading) return progressText || '正在打包并上传到服务器…';
         var today = getLocalDateStr();
         if (cfg.lastDate === today && cfg.lastTime) {
             return '今日已备份（' + formatTime(cfg.lastTime) + '）';
@@ -83,6 +84,48 @@
         if (el) el.textContent = getStatusText();
         var modalStatus = document.getElementById('cb-modal-status');
         if (modalStatus) modalStatus.textContent = getStatusText();
+    }
+
+    function setProgress(text) {
+        progressText = text || '';
+        updateStatusLabel();
+    }
+
+    function uploadBlobWithProgress(url, token, filename, blob, onProgress) {
+        return new Promise(function (resolve, reject) {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', url, true);
+            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+            xhr.setRequestHeader('X-Backup-Token', token);
+            xhr.setRequestHeader('X-Backup-Filename', filename);
+            xhr.timeout = 180000;
+
+            xhr.upload.onprogress = function (e) {
+                if (e.lengthComputable && typeof onProgress === 'function') {
+                    onProgress(e.loaded, e.total);
+                }
+            };
+            xhr.upload.onload = function () {
+                if (typeof onProgress === 'function') {
+                    onProgress(blob.size, blob.size, true);
+                }
+            };
+            xhr.onload = function () {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    resolve(xhr.responseText);
+                } else {
+                    var errMsg = 'HTTP ' + xhr.status;
+                    try {
+                        var errJson = JSON.parse(xhr.responseText || '{}');
+                        if (errJson && errJson.error) errMsg = errJson.error;
+                    } catch (e) {}
+                    reject(new Error(errMsg));
+                }
+            };
+            xhr.onerror = function () { reject(new Error('网络连接失败')); };
+            xhr.ontimeout = function () { reject(new Error('上传超时（超过 180 秒）')); };
+            xhr.send(blob);
+        });
     }
 
     async function uploadNow(opts) {
@@ -114,41 +157,37 @@
         }
 
         uploading = true;
-        updateStatusLabel();
+        setProgress('正在读取本地数据…');
         if (!silent && typeof showNotification === 'function') {
-            showNotification('正在打包并上传备份到服务器…', 'info', 4000);
+            showNotification('开始打包并上传备份…', 'info', 3000);
         }
 
         try {
-            var result = await window.ChatBackup.createBackupBlob();
-            var resp = await fetch(cfg.url, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/octet-stream',
-                    'X-Backup-Token': cfg.token,
-                    'X-Backup-Filename': result.filename
-                },
-                body: result.blob
+            var result = await window.ChatBackup.createBackupBlob(null, function (p) {
+                if (p && p.text) setProgress(p.text);
             });
+            var totalMB = (result.blob.size / 1048576).toFixed(2);
+            setProgress('打包完成（' + totalMB + ' MB），开始上传…');
+            console.log('[cloud-backup] 打包完成:', result.filename, totalMB + ' MB，开始上传');
 
-            if (!resp.ok) {
-                var errMsg = 'HTTP ' + resp.status;
-                try {
-                    var errJson = await resp.json();
-                    if (errJson && errJson.error) errMsg = errJson.error;
-                } catch (e) {}
-                throw new Error(errMsg);
-            }
+            await uploadBlobWithProgress(cfg.url, cfg.token, result.filename, result.blob, function (loaded, total, done) {
+                if (done) {
+                    setProgress('上传完成，等待服务器落盘…');
+                    return;
+                }
+                var pct = total > 0 ? Math.min(100, Math.round(loaded / total * 100)) : 0;
+                var loadedMB = (loaded / 1048576).toFixed(2);
+                setProgress('正在上传：' + pct + '%（' + loadedMB + ' / ' + totalMB + ' MB）');
+            });
 
             var today = getLocalDateStr();
             localStorage.setItem(KEYS.lastDate, today);
             localStorage.setItem(KEYS.lastTime, String(Date.now()));
             localStorage.removeItem(KEYS.lastError);
 
-            var sizeMB = (result.blob.size / 1048576).toFixed(2);
-            console.log('[cloud-backup] 上传成功:', result.filename, sizeMB + ' MB');
+            console.log('[cloud-backup] 上传成功:', result.filename, totalMB + ' MB');
             if (!silent && typeof showNotification === 'function') {
-                showNotification('云端备份上传成功（' + sizeMB + ' MB）', 'success', 3500);
+                showNotification('云端备份上传成功（' + totalMB + ' MB）', 'success', 3500);
             }
             return { ok: true, filename: result.filename, size: result.blob.size };
         } catch (err) {
@@ -161,6 +200,7 @@
             return { ok: false, error: msg };
         } finally {
             uploading = false;
+            progressText = '';
             updateStatusLabel();
         }
     }
