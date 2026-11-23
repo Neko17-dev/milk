@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>备份查看器 · 传讯 Admin</title>
+    <link rel="icon" type="image/png" href="/icons/icon-192.png">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        :root {
+            --bg: #0f1115;
+            --panel: #161920;
+            --panel-2: #1d212b;
+            --border: #2a2f3d;
+            --text: #e8eaed;
+            --text-dim: #9aa0ae;
+            --accent: #c5a47e;
+            --accent-bg: rgba(197, 164, 126, 0.16);
+            --sent-bg: #c5a47e;
+            --sent-text: #1b150e;
+            --recv-bg: #232834;
+            --recv-text: #e8eaed;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+
+        /* Login screen */
+        #login-view {
+            min-height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .login-card {
+            width: min(92vw, 380px);
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 26px 24px;
+            box-shadow: 0 18px 48px rgba(0,0,0,0.45);
+        }
+        .login-card h1 { font-size: 18px; margin-bottom: 6px; }
+        .login-card p { font-size: 13px; color: var(--text-dim); margin-bottom: 18px; line-height: 1.5; }
+        .input {
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--panel-2);
+            color: var(--text);
+            font-size: 14px;
+            outline: none;
+        }
+        .input:focus { border-color: var(--accent); }
+        .btn {
+            border: none;
+            border-radius: 10px;
+            padding: 9px 14px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            background: var(--panel-2);
+            color: var(--text);
+            border: 1px solid var(--border);
+            transition: opacity 0.15s;
+        }
+        .btn:hover { opacity: 0.9; }
+        .btn-primary { background: var(--accent); color: #1b150e; border-color: transparent; }
+        .login-err { color: #ff6b6b; font-size: 12px; margin-top: 10px; min-height: 16px; }
+        .remember-row { display: flex; align-items: center; gap: 8px; margin: 12px 0 16px; font-size: 12px; color: var(--text-dim); }
+
+        /* App layout */
+        #app-view { display: none; height: 100%; grid-template-columns: 290px 1fr; }
+        #app-view.active { display: grid; }
+
+        .sidebar {
+            background: var(--panel);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+        .sidebar-header {
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .sidebar-title { font-size: 15px; font-weight: 600; }
+        .badge-ro {
+            font-size: 11px;
+            padding: 2px 7px;
+            border-radius: 999px;
+            background: var(--accent-bg);
+            color: var(--accent);
+            font-weight: 500;
+        }
+        .sidebar-body { flex: 1; overflow-y: auto; padding: 10px; }
+        .sec-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; padding: 8px 8px 6px; }
+
+        .user-item, .file-item {
+            padding: 9px 11px;
+            border-radius: 10px;
+            cursor: pointer;
+            margin-bottom: 4px;
+            border: 1px solid transparent;
+            transition: background 0.15s;
+        }
+        .user-item:hover, .file-item:hover { background: var(--panel-2); }
+        .user-item.active, .file-item.active { background: var(--accent-bg); border-color: rgba(197,164,126,0.4); }
+        .item-main { font-size: 13px; font-weight: 500; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+        .item-sub { font-size: 11px; color: var(--text-dim); margin-top: 3px; }
+
+        .main {
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            background: var(--bg);
+        }
+        .topbar {
+            padding: 12px 16px;
+            background: var(--panel);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+        }
+        .topbar-info { flex: 1; min-width: 180px; }
+        .topbar-title { font-size: 15px; font-weight: 600; }
+        .topbar-meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+        .topbar-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+        .search-input { width: 190px; padding: 7px 10px; font-size: 13px; }
+        select.input { width: auto; max-width: 200px; padding: 7px 10px; font-size: 13px; }
+
+        .chat-scroll {
+            flex: 1;
+            overflow-y: auto;
+            padding: 18px 20px 36px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .empty-hint {
+            margin: auto;
+            text-align: center;
+            color: var(--text-dim);
+            font-size: 14px;
+            line-height: 1.7;
+        }
+
+        .date-divider {
+            align-self: center;
+            font-size: 11px;
+            color: var(--text-dim);
+            background: var(--panel);
+            border: 1px solid var(--border);
+            padding: 3px 10px;
+            border-radius: 999px;
+            margin: 8px 0;
+        }
+        .sys-pill {
+            align-self: center;
+            font-size: 12px;
+            color: var(--text-dim);
+            background: rgba(255,255,255,0.04);
+            padding: 4px 12px;
+            border-radius: 999px;
+            max-width: 85%;
+            text-align: center;
+        }
+
+        .msg-row { display: flex; flex-direction: column; max-width: min(76%, 640px); }
+        .msg-row.sent { align-self: flex-end; align-items: flex-end; }
+        .msg-row.recv { align-self: flex-start; align-items: flex-start; }
+        .msg-sender { font-size: 11px; color: var(--text-dim); margin: 0 6px 4px; }
+        .msg-bubble {
+            padding: 10px 13px;
+            border-radius: 14px;
+            font-size: 14px;
+            line-height: 1.55;
+            word-break: break-word;
+            white-space: pre-wrap;
+        }
+        .msg-row.sent .msg-bubble { background: var(--sent-bg); color: var(--sent-text); border-bottom-right-radius: 4px; }
+        .msg-row.recv .msg-bubble { background: var(--recv-bg); color: var(--recv-text); border-bottom-left-radius: 4px; }
+        .msg-quote {
+            font-size: 12px;
+            padding: 5px 8px;
+            border-radius: 8px;
+            margin-bottom: 6px;
+            background: rgba(0,0,0,0.16);
+            border-left: 3px solid rgba(255,255,255,0.35);
+            opacity: 0.9;
+        }
+        .msg-img {
+            display: block;
+            max-width: 240px;
+            max-height: 280px;
+            border-radius: 10px;
+            margin-top: 6px;
+            cursor: zoom-in;
+            object-fit: cover;
+        }
+        .msg-img:first-child { margin-top: 0; }
+        .msg-time { font-size: 11px; color: var(--text-dim); margin: 4px 6px 0; }
+
+        .load-more-bar {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            padding: 10px 0;
+        }
+
+        /* Lightbox */
+        #lightbox {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            background: rgba(0,0,0,0.85);
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            cursor: zoom-out;
+        }
+        #lightbox.open { display: flex; }
+        #lightbox img { max-width: 94vw; max-height: 92vh; border-radius: 10px; }
+
+        @media (max-width: 820px) {
+            #app-view.active { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+            .sidebar { max-height: 36vh; border-right: none; border-bottom: 1px solid var(--border); }
+            .msg-row { max-width: 88%; }
+        }
+    </style>
+</head>
+<body>
+
+<div id="login-view">
+    <div class="login-card">
+        <h1>备份查看器 <span class="badge-ro">只读</span></h1>
+        <p>输入服务端配置的 <code>ADMIN_TOKEN</code> 以查看各用户的聊天记录备份。</p>
+        <input id="admin-token-input" class="input" type="password" placeholder="请输入 ADMIN_TOKEN" autocomplete="off">
+        <label class="remember-row">
+            <input id="remember-token" type="checkbox">
+            <span>在此浏览器记住管理员密钥</span>
+        </label>
+        <button id="login-btn" class="btn btn-primary" style="width:100%">进入查看</button>
+        <div id="login-err" class="login-err"></div>
+    </div>
+</div>
+
+<div id="app-view">
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <span class="sidebar-title">备份列表 <span class="badge-ro">只读</span></span>
+            <div style="display:flex;gap:6px">
+                <button id="refresh-users-btn" class="btn" style="padding:5px 9px;font-size:12px">刷新</button>
+                <button id="logout-btn" class="btn" style="padding:5px 9px;font-size:12px">退出</button>
+            </div>
+        </div>
+        <div class="sidebar-body">
+            <div class="sec-label">用户目录</div>
+            <div id="user-list"></div>
+            <div class="sec-label" id="file-sec-label" style="display:none">历史备份</div>
+            <div id="file-list"></div>
+        </div>
+    </aside>
+
+    <main class="main">
+        <div class="topbar">
+            <div class="topbar-info">
+                <div class="topbar-title" id="viewer-title">请选择左侧用户与备份</div>
+                <div class="topbar-meta" id="viewer-meta">仅保留查看功能，不会修改任何服务器备份</div>
+            </div>
+            <div class="topbar-controls">
+                <select id="session-select" class="input" style="display:none"></select>
+                <input id="search-input" class="input search-input" type="search" placeholder="搜索聊天内容…" disabled>
+                <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-dim);cursor:pointer">
+                    <input id="only-images-toggle" type="checkbox" disabled> 仅看图片
+                </label>
+                <button id="download-raw-btn" class="btn" style="display:none">下载原包</button>
+            </div>
+        </div>
+        <div class="chat-scroll" id="chat-scroll">
+            <div class="empty-hint">从左侧选择一位用户和备份日期<br>即可在线解压并浏览聊天记录</div>
+        </div>
+    </main>
+</div>
+
+<div id="lightbox"><img id="lightbox-img" alt="预览"></div>
+
+<script>
+(function () {
+    'use strict';
+
+    var TOKEN_SS_KEY = 'milkAdminTokenSession';
+    var TOKEN_LS_KEY = 'milkAdminTokenLocal';
+    var adminToken = '';
+    var usersData = [];
+    var activeUserId = '';
+    var activeFileName = '';
+    var currentRawBlob = null;
+    var currentSessions = [];
+    var activeSessionIdx = 0;
+    var activeObjectUrls = [];
+    var pageLimit = 200;
+
+    var $ = function (id) { return document.getElementById(id); };
+
+    function fmtBytes(b) {
+        if (!b || b < 1024) return (b || 0) + ' B';
+        if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+        return (b / 1048576).toFixed(2) + ' MB';
+    }
+
+    function fmtDateTime(ts) {
+        if (!ts) return '';
+        var d = new Date(ts);
+        if (isNaN(d.getTime())) return '';
+        var y = d.getFullYear();
+        var m = String(d.getMonth() + 1).padStart(2, '0');
+        var day = String(d.getDate()).padStart(2, '0');
+        var hh = String(d.getHours()).padStart(2, '0');
+        var mm = String(d.getMinutes()).padStart(2, '0');
+        return y + '-' + m + '-' + day + ' ' + hh + ':' + mm;
+    }
+
+    function fmtDay(ts) {
+        if (!ts) return '';
+        var d = new Date(ts);
+        if (isNaN(d.getTime())) return '';
+        return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    }
+
+    function fmtClock(ts) {
+        if (!ts) return '';
+        var d = new Date(ts);
+        if (isNaN(d.getTime())) return '';
+        return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    }
+
+    function revokeObjectUrls() {
+        activeObjectUrls.forEach(function (u) {
+            try { URL.revokeObjectURL(u); } catch (e) {}
+        });
+        activeObjectUrls = [];
+    }
+
+    async function apiGetJson(url) {
+        var resp = await fetch(url, { headers: { 'X-Admin-Token': adminToken } });
+        var data = {};
+        try { data = await resp.json(); } catch (e) {}
+        if (!resp.ok) {
+            var err = new Error((data && data.error) || ('HTTP ' + resp.status));
+            err.status = resp.status;
+            throw err;
+        }
+        return data;
+    }
+
+    async function loadUsers() {
+        var data = await apiGetJson('/api/backup/admin/users');
+        usersData = data.users || [];
+        renderUserList();
+        if (activeUserId) {
+            var stillExists = usersData.some(function (u) { return u.id === activeUserId; });
+            if (stillExists) renderFileList(activeUserId);
+        } else if (usersData.length === 1) {
+            selectUser(usersData[0].id);
+        }
+    }
+
+    function renderUserList() {
+        var listEl = $('user-list');
+        listEl.innerHTML = '';
+        if (!usersData.length) {
+            listEl.innerHTML = '<div class="item-sub" style="padding:8px">暂无用户备份</div>';
+            return;
+        }
+        usersData.forEach(function (u) {
+            var div = document.createElement('div');
+            div.className = 'user-item' + (u.id === activeUserId ? ' active' : '');
+            var main = document.createElement('div');
+            main.className = 'item-main';
+            var nameSpan = document.createElement('span');
+            nameSpan.textContent = u.id;
+            var cntSpan = document.createElement('span');
+            cntSpan.className = 'item-sub';
+            cntSpan.textContent = (u.files ? u.files.length : 0) + ' 份';
+            main.appendChild(nameSpan);
+            main.appendChild(cntSpan);
+            div.appendChild(main);
+            div.addEventListener('click', function () { selectUser(u.id); });
+            listEl.appendChild(div);
+        });
+    }
+
+    function selectUser(uid) {
+        activeUserId = uid;
+        renderUserList();
+        renderFileList(uid);
+    }
+
+    function renderFileList(uid) {
+        var user = usersData.find(function (u) { return u.id === uid; });
+        var fileSec = $('file-sec-label');
+        var fileListEl = $('file-list');
+        fileSec.style.display = 'block';
+        fileListEl.innerHTML = '';
+
+        var files = (user && user.files) || [];
+        if (!files.length) {
+            fileListEl.innerHTML = '<div class="item-sub" style="padding:8px">该用户暂无备份文件</div>';
+            return;
+        }
+
+        files.forEach(function (f) {
+            var div = document.createElement('div');
+            div.className = 'file-item' + (activeUserId === uid && activeFileName === f.name ? ' active' : '');
+            var main = document.createElement('div');
+            main.className = 'item-main';
+            var title = document.createElement('span');
+            title.textContent = f.name.replace(/^chatapp-backup-/, '');
+            var size = document.createElement('span');
+            size.className = 'item-sub';
+            size.textContent = fmtBytes(f.bytes);
+            main.appendChild(title);
+            main.appendChild(size);
+
+            var sub = document.createElement('div');
+            sub.className = 'item-sub';
+            sub.textContent = '上传于 ' + fmtDateTime(f.mtime * 1000);
+
+            div.appendChild(main);
+            div.appendChild(sub);
+            div.addEventListener('click', function () { loadBackup(uid, f.name); });
+            fileListEl.appendChild(div);
+        });
+    }
+
+    function resolveMediaRef(val, mediaMap) {
+        if (!val) return '';
+        if (typeof val === 'string') return val;
+        if (typeof val === 'object' && val.__mRef && mediaMap[val.__mRef]) {
+            return mediaMap[val.__mRef];
+        }
+        return '';
+    }
+
+    async function parseBackupBlob(blob) {
+        revokeObjectUrls();
+        var buf = await blob.arrayBuffer();
+        var u8 = new Uint8Array(buf);
+        var isZip = u8.length >= 4 && u8[0] === 0x50 && u8[1] === 0x4b;
+        var json = null;
+        var mediaMap = {};
+
+        if (isZip) {
+            if (typeof JSZip === 'undefined') throw new Error('JSZip 未加载，无法解压');
+            var zip = await JSZip.loadAsync(buf);
+            var mainFile = zip.file('backup.json');
+            if (!mainFile) throw new Error('ZIP 中缺少 backup.json');
+            var text = await mainFile.async('string');
+            if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+            json = JSON.parse(text);
+
+            var idx = json.mediaIndex || {};
+            var ids = Object.keys(idx);
+            for (var i = 0; i < ids.length; i++) {
+                var id = ids[i];
+                var entry = idx[id];
+                var zf = entry && entry.path ? zip.file(entry.path) : null;
+                if (!zf) continue;
+                if (entry.mime === 'text/plain+dataurl') {
+                    mediaMap[id] = await zf.async('string');
+                } else {
+                    var ab = await zf.async('arraybuffer');
+                    var mBlob = new Blob([ab], { type: entry.mime || 'application/octet-stream' });
+                    var objUrl = URL.createObjectURL(mBlob);
+                    activeObjectUrls.push(objUrl);
+                    mediaMap[id] = objUrl;
+                }
+            }
+        } else {
+            var rawText = new TextDecoder('utf-8').decode(buf);
+            if (rawText.charCodeAt(0) === 0xFEFF) rawText = rawText.slice(1);
+            json = JSON.parse(rawText);
+            if (json.mediaStore && typeof json.mediaStore === 'object') {
+                mediaMap = json.mediaStore;
+            }
+        }
+
+        var lf = json.localforage || json.indexedDB || {};
+        var sessionsMap = {};
+        var sessionMeta = {};
+
+        // 读取会话列表名称（若有）
+        Object.keys(lf).forEach(function (k) {
+            if (k.endsWith('sessionList') && Array.isArray(lf[k])) {
+                lf[k].forEach(function (s) {
+                    if (s && s.id) sessionMeta[s.id] = s.name || s.id;
+                });
+            }
+        });
+
+        // 提取每个会话的消息与设置
+        Object.keys(lf).forEach(function (k) {
+            var mMsg = /_([^_]+)_chatMessages$/.exec(k);
+            if (mMsg && Array.isArray(lf[k])) {
+                var sid = mMsg[1];
+                if (!sessionsMap[sid]) sessionsMap[sid] = { id: sid, messages: [], settings: {} };
+                sessionsMap[sid].messages = lf[k];
+            }
+            var mCfg = /_([^_]+)_chatSettings$/.exec(k);
+            if (mCfg && lf[k] && typeof lf[k] === 'object') {
+                var sid2 = mCfg[1];
+                if (!sessionsMap[sid2]) sessionsMap[sid2] = { id: sid2, messages: [], settings: {} };
+                sessionsMap[sid2].settings = lf[k];
+            }
+        });
+
+        var sessions = Object.keys(sessionsMap).map(function (sid) {
+            var s = sessionsMap[sid];
+            var cfg = s.settings || {};
+            var title = sessionMeta[sid] || cfg.partnerName || sid;
+            return {
+                id: sid,
+                title: title,
+                myName: cfg.myName || '我',
+                partnerName: cfg.partnerName || '对方',
+                messages: s.messages || [],
+                mediaMap: mediaMap
+            };
+        }).sort(function (a, b) { return b.messages.length - a.messages.length; });
+
+        return { sessions: sessions, timestamp: json.timestamp };
+    }
+
+    async function loadBackup(uid, fileName) {
+        activeUserId = uid;
+        activeFileName = fileName;
+        renderFileList(uid);
+
+        $('viewer-title').textContent = uid + ' / ' + fileName;
+        $('viewer-meta').textContent = '正在下载并解压备份…';
+        $('chat-scroll').innerHTML = '<div class="empty-hint">正在下载并解析备份包，请稍候…</div>';
+        $('session-select').style.display = 'none';
+        $('download-raw-btn').style.display = 'none';
+        $('search-input').disabled = true;
+        $('only-images-toggle').disabled = true;
+
+        try {
+            var url = '/api/backup/admin/backup?user=' + encodeURIComponent(uid) + '&file=' + encodeURIComponent(fileName);
+            var resp = await fetch(url, { headers: { 'X-Admin-Token': adminToken } });
+            if (!resp.ok) {
+                var errTxt = 'HTTP ' + resp.status;
+                try {
+                    var j = await resp.json();
+                    if (j && j.error) errTxt = j.error;
+                } catch (e) {}
+                throw new Error(errTxt);
+            }
+            var blob = await resp.blob();
+            currentRawBlob = blob;
+            var parsed = await parseBackupBlob(blob);
+            currentSessions = parsed.sessions;
+            activeSessionIdx = 0;
+            pageLimit = 200;
+
+            var sel = $('session-select');
+            sel.innerHTML = '';
+            currentSessions.forEach(function (s, idx) {
+                var opt = document.createElement('option');
+                opt.value = String(idx);
+                opt.textContent = s.title + '（' + s.messages.length + ' 条）';
+                sel.appendChild(opt);
+            });
+            sel.style.display = currentSessions.length > 1 ? 'inline-block' : 'none';
+            $('download-raw-btn').style.display = 'inline-block';
+            $('search-input').value = '';
+            $('search-input').disabled = false;
+            $('only-images-toggle').checked = false;
+            $('only-images-toggle').disabled = false;
+
+            renderMessages(true);
+        } catch (err) {
+            $('viewer-meta').textContent = '加载失败：' + (err.message || err);
+            $('chat-scroll').innerHTML = '<div class="empty-hint">无法读取该备份：' + String(err.message || err) + '</div>';
+        }
+    }
+
+    function renderMessages(scrollToBottom) {
+        var box = $('chat-scroll');
+        box.innerHTML = '';
+
+        if (!currentSessions.length) {
+            $('viewer-meta').textContent = '备份中未找到聊天记录';
+            box.innerHTML = '<div class="empty-hint">该备份中没有聊天记录</div>';
+            return;
+        }
+
+        var session = currentSessions[activeSessionIdx] || currentSessions[0];
+        var kw = ($('search-input').value || '').trim().toLowerCase();
+        var onlyImg = $('only-images-toggle').checked;
+
+        var filtered = session.messages.filter(function (m) {
+            if (!m) return false;
+            var imgSrc = resolveMediaRef(m.image, session.mediaMap);
+            if (onlyImg && !imgSrc) return false;
+            if (kw) {
+                var t = (m.text || '').toLowerCase();
+                var q = (m.replyTo && m.replyTo.text ? m.replyTo.text : '').toLowerCase();
+                if (t.indexOf(kw) === -1 && q.indexOf(kw) === -1) return false;
+            }
+            return true;
+        });
+
+        $('viewer-meta').textContent = '会话：' + session.title
+            + ' · 共 ' + session.messages.length + ' 条'
+            + (filtered.length !== session.messages.length ? ('（筛选后 ' + filtered.length + ' 条）') : '');
+
+        if (!filtered.length) {
+            box.innerHTML = '<div class="empty-hint">没有匹配的聊天记录</div>';
+            return;
+        }
+
+        var startIdx = Math.max(0, filtered.length - pageLimit);
+        var slice = filtered.slice(startIdx);
+
+        if (startIdx > 0) {
+            var bar = document.createElement('div');
+            bar.className = 'load-more-bar';
+            var moreBtn = document.createElement('button');
+            moreBtn.className = 'btn';
+            moreBtn.textContent = '加载更早 200 条（还有 ' + startIdx + ' 条）';
+            moreBtn.addEventListener('click', function () {
+                pageLimit += 200;
+                renderMessages(false);
+            });
+            var allBtn = document.createElement('button');
+            allBtn.className = 'btn';
+            allBtn.textContent = '显示全部';
+            allBtn.addEventListener('click', function () {
+                pageLimit = filtered.length;
+                renderMessages(false);
+            });
+            bar.appendChild(moreBtn);
+            bar.appendChild(allBtn);
+            box.appendChild(bar);
+        }
+
+        var frag = document.createDocumentFragment();
+        var lastDay = '';
+
+        slice.forEach(function (m) {
+            var day = fmtDay(m.timestamp);
+            if (day && day !== lastDay) {
+                lastDay = day;
+                var dd = document.createElement('div');
+                dd.className = 'date-divider';
+                dd.textContent = day;
+                frag.appendChild(dd);
+            }
+
+            if (m.type === 'system' || m.type === 'call-event') {
+                var sp = document.createElement('div');
+                sp.className = 'sys-pill';
+                sp.textContent = m.text || '[系统消息]';
+                frag.appendChild(sp);
+                return;
+            }
+
+            var isUser = m.sender === 'user';
+            var row = document.createElement('div');
+            row.className = 'msg-row ' + (isUser ? 'sent' : 'recv');
+
+            var senderLabel = document.createElement('div');
+            senderLabel.className = 'msg-sender';
+            senderLabel.textContent = isUser
+                ? session.myName
+                : (m.senderName || m.groupMemberName || session.partnerName);
+            row.appendChild(senderLabel);
+
+            var bubble = document.createElement('div');
+            bubble.className = 'msg-bubble';
+
+            if (m.replyTo) {
+                var q = document.createElement('div');
+                q.className = 'msg-quote';
+                var qWho = m.replyTo.sender === 'user' ? session.myName : session.partnerName;
+                q.textContent = qWho + '：' + (m.replyTo.text || (m.replyTo.image ? '[图片]' : '[消息]'));
+                bubble.appendChild(q);
+            }
+
+            if (m.text) {
+                var txt = document.createElement('div');
+                txt.textContent = m.text;
+                bubble.appendChild(txt);
+            }
+
+            var imgSrc = resolveMediaRef(m.image, session.mediaMap);
+            if (imgSrc) {
+                var img = document.createElement('img');
+                img.className = 'msg-img';
+                img.src = imgSrc;
+                img.alt = '图片';
+                img.loading = 'lazy';
+                img.addEventListener('click', function () {
+                    $('lightbox-img').src = imgSrc;
+                    $('lightbox').classList.add('open');
+                });
+                bubble.appendChild(img);
+            }
+
+            row.appendChild(bubble);
+
+            var timeStr = fmtClock(m.timestamp);
+            if (timeStr) {
+                var tm = document.createElement('div');
+                tm.className = 'msg-time';
+                tm.textContent = timeStr;
+                row.appendChild(tm);
+            }
+            frag.appendChild(row);
+        });
+
+        box.appendChild(frag);
+        if (scrollToBottom) {
+            requestAnimationFrame(function () { box.scrollTop = box.scrollHeight; });
+        }
+    }
+
+    async function doLogin(token, remember) {
+        $('login-err').textContent = '';
+        adminToken = (token || '').trim();
+        if (!adminToken) {
+            $('login-err').textContent = '请输入管理员密钥';
+            return;
+        }
+        try {
+            await loadUsers();
+            sessionStorage.setItem(TOKEN_SS_KEY, adminToken);
+            if (remember) localStorage.setItem(TOKEN_LS_KEY, adminToken);
+            else localStorage.removeItem(TOKEN_LS_KEY);
+            $('login-view').style.display = 'none';
+            $('app-view').classList.add('active');
+        } catch (err) {
+            adminToken = '';
+            $('login-err').textContent = err.message || '登录失败';
+        }
+    }
+
+    $('login-btn').addEventListener('click', function () {
+        doLogin($('admin-token-input').value, $('remember-token').checked);
+    });
+    $('admin-token-input').addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') doLogin($('admin-token-input').value, $('remember-token').checked);
+    });
+    $('refresh-users-btn').addEventListener('click', function () { loadUsers().catch(function () {}); });
+    $('logout-btn').addEventListener('click', function () {
+        adminToken = '';
+        sessionStorage.removeItem(TOKEN_SS_KEY);
+        localStorage.removeItem(TOKEN_LS_KEY);
+        revokeObjectUrls();
+        $('app-view').classList.remove('active');
+        $('login-view').style.display = 'flex';
+        $('admin-token-input').value = '';
+    });
+    $('session-select').addEventListener('change', function () {
+        activeSessionIdx = parseInt(this.value, 10) || 0;
+        pageLimit = 200;
+        renderMessages(true);
+    });
+    $('search-input').addEventListener('input', function () {
+        pageLimit = 200;
+        renderMessages(false);
+    });
+    $('only-images-toggle').addEventListener('change', function () {
+        pageLimit = 200;
+        renderMessages(false);
+    });
+    $('download-raw-btn').addEventListener('click', function () {
+        if (!currentRawBlob) return;
+        var a = document.createElement('a');
+        var u = URL.createObjectURL(currentRawBlob);
+        a.href = u;
+        a.download = activeUserId + '-' + activeFileName;
+        a.click();
+        setTimeout(function () { URL.revokeObjectURL(u); }, 5000);
+    });
+    $('lightbox').addEventListener('click', function () {
+        $('lightbox').classList.remove('open');
+        $('lightbox-img').src = '';
+    });
+
+    // 支持 #admin_token=xxx 自动登录并立刻清除地址栏
+    (function initAuth() {
+        var urlToken = '';
+        try {
+            var u = new URL(window.location.href);
+            if (u.hash && u.hash.length > 1) {
+                var hp = new URLSearchParams(u.hash.slice(1));
+                if (hp.has('admin_token')) {
+                    urlToken = (hp.get('admin_token') || '').trim();
+                    hp.delete('admin_token');
+                    u.hash = hp.toString() ? ('#' + hp.toString()) : '';
+                    history.replaceState(null, '', u.pathname + u.search + u.hash);
+                }
+            }
+        } catch (e) {}
+
+        var saved = urlToken || sessionStorage.getItem(TOKEN_SS_KEY) || localStorage.getItem(TOKEN_LS_KEY) || '';
+        if (saved) {
+            $('admin-token-input').value = saved;
+            $('remember-token').checked = !!localStorage.getItem(TOKEN_LS_KEY);
+            doLogin(saved, !!localStorage.getItem(TOKEN_LS_KEY));
+        }
+    })();
+})();
+</script>
+</body>
+</html>

@@ -25,6 +25,7 @@ After=network.target
 Type=simple
 WorkingDirectory=/data/www/milk/server
 Environment=BACKUP_TOKENS=alice:密钥A,bob:密钥B
+Environment=ADMIN_TOKEN=管理员只读查看密钥
 Environment=BACKUP_DIR=/data/milk-backups
 Environment=BACKUP_PORT=8787
 Environment=BACKUP_KEEP_DAYS=30
@@ -115,7 +116,17 @@ https://milk.starleave.cn/#backup_token=替换成你的随机密钥
 2. 密钥（Token）填入第一步设置的 `BACKUP_TOKEN`（接口地址保持默认 `/api/backup`）；
 3. 点「**立即上传**」测试，看到提示「云端备份上传成功」即完成，此后每天打开页面都会自动在后台上传一次。
 
-## 4. 本地电脑拉回最新备份
+## 4. 在线只读查看所有用户备份（`/admin`）
+
+在 `milk-backup.service` 配置 `ADMIN_TOKEN` 并重启服务后，直接访问：
+
+```
+https://milk.starleave.cn/admin
+```
+
+输入 `ADMIN_TOKEN`（或使用 `https://milk.starleave.cn/admin/#admin_token=管理员密钥` 自动填入并清除地址栏）即可只读浏览所有用户的历史备份、搜索消息和查看图片，无任何修改/删除入口。
+
+## 5. 本地电脑拉回最新备份
 
 随时在本地终端执行即可拉回最新一份 ZIP：
 

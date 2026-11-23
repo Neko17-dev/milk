@@ -24,6 +24,7 @@ BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "/data/milk-backups"))
 BACKUP_TOKEN = os.environ.get("BACKUP_TOKEN", "").strip()
 BACKUP_TOKENS_RAW = os.environ.get("BACKUP_TOKENS", "").strip()
 BACKUP_TOKENS_FILE = os.environ.get("BACKUP_TOKENS_FILE", "").strip()
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "").strip()
 MAX_BYTES = int(os.environ.get("BACKUP_MAX_MB", "200")) * 1024 * 1024
 MAX_CHUNK_BYTES = 8 * 1024 * 1024
 KEEP_DAYS = int(os.environ.get("BACKUP_KEEP_DAYS", "30"))
@@ -153,6 +154,29 @@ class BackupHandler(BaseHTTPRequestHandler):
             return None
         return resolved
 
+    def _authenticate_admin(self) -> bool:
+        if not ADMIN_TOKEN:
+            self._send_json(403, {"ok": False, "error": "未启用管理查看功能，请在服务端设置 ADMIN_TOKEN"})
+            return False
+        token = (self.headers.get("X-Admin-Token") or "").strip()
+        if not token or not hmac.compare_digest(token, ADMIN_TOKEN):
+            self._send_json(401, {"ok": False, "error": "管理员密钥无效"})
+            return False
+        return True
+
+    def _list_backup_files(self, folder: Path) -> list:
+        files = []
+        if folder.is_dir():
+            for p in sorted(folder.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+                if p.is_file() and BACKUP_FILE_RE.match(p.name):
+                    st = p.stat()
+                    files.append({
+                        "name": p.name,
+                        "bytes": st.st_size,
+                        "mtime": int(st.st_mtime),
+                    })
+        return files
+
     def _read_body(self, max_bytes: int) -> Optional[bytes]:
         try:
             content_length = int(self.headers.get("Content-Length", "0"))
@@ -175,7 +199,62 @@ class BackupHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
         if path in ("/api/backup/health", "/health"):
-            self._send_json(200, {"ok": True, "multiUser": MULTI_USER_MODE, "chunked": True})
+            self._send_json(200, {"ok": True, "multiUser": MULTI_USER_MODE, "chunked": True, "adminEnabled": bool(ADMIN_TOKEN)})
+            return
+
+        # 管理员只读接口：列出所有用户及其备份文件
+        if path in ("/api/backup/admin/users", "/admin/users"):
+            if not self._authenticate_admin():
+                return
+            users_out = []
+            if BACKUP_DIR.is_dir():
+                if MULTI_USER_MODE:
+                    seen = set()
+                    for p in sorted(BACKUP_DIR.iterdir(), key=lambda x: x.name):
+                        if p.is_dir() and USER_ID_RE.match(p.name):
+                            seen.add(p.name)
+                            users_out.append({"id": p.name, "files": self._list_backup_files(p)})
+                    for uid in sorted(USER_TOKENS.keys()):
+                        if uid not in seen:
+                            users_out.append({"id": uid, "files": []})
+                else:
+                    users_out.append({"id": "default", "files": self._list_backup_files(BACKUP_DIR)})
+            self._send_json(200, {"ok": True, "multiUser": MULTI_USER_MODE, "users": users_out})
+            return
+
+        # 管理员只读接口：下载指定用户的指定备份文件
+        if path in ("/api/backup/admin/backup", "/admin/backup"):
+            if not self._authenticate_admin():
+                return
+            qs = parse_qs(parsed.query)
+            req_user = (qs.get("user") or [""])[0].strip()
+            req_file = (qs.get("file") or [""])[0].strip()
+            if not req_file or not (BACKUP_FILE_RE.match(req_file) or req_file in ("latest.zip", "latest.json")):
+                self._send_json(400, {"ok": False, "error": "无效的文件名"})
+                return
+            if MULTI_USER_MODE:
+                if not USER_ID_RE.match(req_user):
+                    self._send_json(400, {"ok": False, "error": "无效的用户名"})
+                    return
+                target_dir = (BACKUP_DIR / req_user).resolve()
+                if target_dir.parent != BACKUP_DIR.resolve():
+                    self._send_json(400, {"ok": False, "error": "非法路径"})
+                    return
+            else:
+                target_dir = BACKUP_DIR.resolve()
+            target = (target_dir / req_file).resolve()
+            if target.parent != target_dir or not target.is_file():
+                self._send_json(404, {"ok": False, "error": "备份文件不存在"})
+                return
+            data = target.read_bytes()
+            ctype = "application/zip" if target.suffix == ".zip" else "application/json"
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Disposition", f'attachment; filename="{req_user}-{target.name}"')
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
             return
 
         auth = self._authenticate()

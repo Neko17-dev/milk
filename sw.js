@@ -1,4 +1,4 @@
-const CACHE_NAME = 'chuanxun-v8';
+const CACHE_NAME = 'chuanxun-v9';
 
 // 需要预缓存的核心资源（离线可用）
 const PRECACHE_URLS = [
@@ -54,10 +54,10 @@ self.addEventListener('activate', event => {
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
 
-  // 跳过非 GET 请求、chrome-extension 和服务端 API 接口
+  // 跳过非 GET 请求、chrome-extension、服务端 API 和管理查看页
   if (event.request.method !== 'GET') return;
   if (url.protocol === 'chrome-extension:') return;
-  if (url.origin === self.location.origin && url.pathname.startsWith('/api/')) return;
+  if (url.origin === self.location.origin && (url.pathname.startsWith('/api/') || url.pathname.startsWith('/admin'))) return;
 
   // 页面导航 / HTML：网络优先，离线回退缓存（避免发版后需刷新两次）
   if (url.origin === self.location.origin && (event.request.mode === 'navigate' || url.pathname === '/' || url.pathname === '/index.html')) {
