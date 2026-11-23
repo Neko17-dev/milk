@@ -53,6 +53,10 @@
             }
         } catch (e) {}
         updateStatusLabel();
+        if (cfg && typeof cfg.token === 'string' && cfg.token.trim()
+            && window.AlbumSyncManager && typeof window.AlbumSyncManager.runSync === 'function') {
+            setTimeout(function () { window.AlbumSyncManager.runSync({ manual: false }); }, 1000);
+        }
     }
 
     function formatTime(ts) {
