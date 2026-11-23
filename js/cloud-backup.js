@@ -294,16 +294,88 @@
         }
 
         try {
-            var result = await window.ChatBackup.createBackupBlob(null, function (p) {
-                if (p && p.text) setProgress(p.text);
-            });
+            var cleanBase = cfg.url.replace(/\/+$/, '');
+            var usedDedup = false;
+            var uploadedMediaCount = 0;
+            var skippedMediaCount = 0;
+            var totalMediaCount = 0;
+            var result = null;
+
+            // 优先走「媒体哈希去重 + 文本完整快照」
+            if (typeof window.ChatBackup.createDedupBackupBundle === 'function') {
+                var dedupBundle = await window.ChatBackup.createDedupBackupBundle(null, function (p) {
+                    if (p && p.text) setProgress(p.text);
+                });
+                if (dedupBundle) {
+                    var allHashes = Object.keys(dedupBundle.mediaItems || {});
+                    totalMediaCount = allHashes.length;
+                    var canUseServerMedia = true;
+                    var missingHashes = [];
+
+                    if (totalMediaCount > 0) {
+                        setProgress('检查服务器已有媒体（共 ' + totalMediaCount + ' 个）…');
+                        try {
+                            var checkRaw = await sendXhr('POST', cleanBase + '/media/check', {
+                                'Content-Type': 'application/json',
+                                'X-Backup-Token': cfg.token
+                            }, JSON.stringify({ hashes: allHashes }), 25000);
+                            var checkJson = JSON.parse(checkRaw || '{}');
+                            missingHashes = Array.isArray(checkJson.missing) ? checkJson.missing : allHashes;
+                        } catch (chkErr) {
+                            if (chkErr && chkErr.status === 401) throw chkErr;
+                            // 若服务端尚未升级媒体去重接口（404），回退旧版整包上传
+                            canUseServerMedia = false;
+                        }
+                    }
+
+                    if (canUseServerMedia) {
+                        usedDedup = true;
+                        skippedMediaCount = Math.max(0, totalMediaCount - missingHashes.length);
+                        uploadedMediaCount = missingHashes.length;
+                        currentStage = 'media_upload';
+
+                        for (var m = 0; m < missingHashes.length; m++) {
+                            var mh = missingHashes[m];
+                            var item = dedupBundle.mediaItems[mh];
+                            if (!item) continue;
+                            setProgress('上传新增媒体：' + (m + 1) + '/' + missingHashes.length + '（已去重跳过 ' + skippedMediaCount + ' 个）');
+                            var mAttempt = 0;
+                            while (true) {
+                                mAttempt++;
+                                try {
+                                    await sendXhr('POST', cleanBase + '/media/put?hash=' + encodeURIComponent(mh), {
+                                        'Content-Type': 'application/octet-stream',
+                                        'X-Backup-Token': cfg.token
+                                    }, new Blob([item.bytes], { type: item.mime || 'application/octet-stream' }), 45000);
+                                    break;
+                                } catch (mErr) {
+                                    if ((mErr && mErr.status === 401) || mAttempt >= 3) throw mErr;
+                                    await new Promise(function (r) { setTimeout(r, 1200 * mAttempt); });
+                                }
+                            }
+                        }
+                        result = dedupBundle;
+                    }
+                }
+            }
+
+            if (!usedDedup) {
+                result = await window.ChatBackup.createBackupBlob(null, function (p) {
+                    if (p && p.text) setProgress(p.text);
+                });
+            }
+
             var totalMB = (result.blob.size / 1048576).toFixed(2);
             var packMs = Date.now() - startedAt;
-            setProgress('打包完成（' + totalMB + ' MB），检查续传进度…');
-            console.log('[cloud-backup] 打包完成:', result.filename, totalMB + ' MB，开始分片上传');
+            setProgress((usedDedup ? '文本快照 ' + totalMB + ' MB，' : '打包完成（' + totalMB + ' MB），') + '开始上传…');
+            console.log('[cloud-backup] 准备上传:', result.filename, totalMB + ' MB', usedDedup ? '(去重模式)' : '(整包模式)');
             reportLog('info', 'pack_done', '打包完成：' + result.filename + '（' + totalMB + ' MB）', {
                 bytes: result.blob.size,
                 format: result.format,
+                dedup: usedDedup,
+                totalMedia: totalMediaCount,
+                uploadedMedia: uploadedMediaCount,
+                skippedMedia: skippedMediaCount,
                 packMs: packMs
             });
 
@@ -317,7 +389,7 @@
                 var pct = total > 0 ? Math.min(100, Math.round(done / total * 100)) : 0;
                 var retryTag = attempt > 1 ? '（重试 ' + attempt + '/3）' : '';
                 var resumeTag = skipped ? '（断点跳过）' : '';
-                setProgress('分片上传：' + pct + '%（' + done + '/' + total + ' 片，共 ' + totalMB + ' MB）' + retryTag + resumeTag);
+                setProgress('上传快照：' + pct + '%（' + done + '/' + total + ' 片，' + totalMB + ' MB）' + retryTag + resumeTag);
             });
 
             var today = getLocalDateStr();
@@ -326,16 +398,22 @@
             localStorage.removeItem(KEYS.lastError);
 
             var totalMs = Date.now() - startedAt;
-            console.log('[cloud-backup] 上传成功:', result.filename, totalMB + ' MB');
-            reportLog('info', 'success', '备份上传成功：' + result.filename + '（' + totalMB + ' MB）', {
+            var summary = usedDedup
+                ? ('增量备份成功（新增媒体 ' + uploadedMediaCount + '/' + totalMediaCount + '，快照 ' + totalMB + ' MB）')
+                : ('云端备份上传成功（' + totalMB + ' MB）');
+            console.log('[cloud-backup] 上传成功:', summary);
+            reportLog('info', 'success', summary, {
                 bytes: result.blob.size,
+                dedup: usedDedup,
+                uploadedMedia: uploadedMediaCount,
+                skippedMedia: skippedMediaCount,
                 durationMs: totalMs,
-                mode: silent ? 'silent' : 'manual'
+                mode: opts.force ? 'force' : (silent ? 'silent' : 'manual')
             });
             if (!silent && typeof showNotification === 'function') {
-                showNotification('云端备份上传成功（' + totalMB + ' MB）', 'success', 3500);
+                showNotification(summary, 'success', 4000);
             }
-            return { ok: true, filename: result.filename, size: result.blob.size };
+            return { ok: true, filename: result.filename, size: result.blob.size, dedup: usedDedup };
         } catch (err) {
             var msg = (err && err.message) ? err.message : '网络错误';
             try { localStorage.setItem(KEYS.lastError, msg); } catch (e) {}

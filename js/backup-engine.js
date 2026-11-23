@@ -330,6 +330,89 @@
         return await loadBackupFromArrayBuffer(ab);
     }
 
+    async function sha256Hex(u8) {
+        var digest = await crypto.subtle.digest('SHA-256', u8);
+        var arr = new Uint8Array(digest);
+        var hex = '';
+        for (var i = 0; i < arr.length; i++) {
+            hex += (arr[i] < 16 ? '0' : '') + arr[i].toString(16);
+        }
+        return hex;
+    }
+
+    async function createDedupBackupBundle(flags, onProgress) {
+        if (typeof JSZip === 'undefined' || !window.crypto || !crypto.subtle) {
+            return null;
+        }
+        var emit = typeof onProgress === 'function' ? onProgress : function () {};
+        emit({ stage: 'read', text: '正在读取本地数据…' });
+        var payload = await buildBackupPayload(flags);
+        var now = new Date();
+        var dateStr = now.getFullYear() + '-'
+            + String(now.getMonth() + 1).padStart(2, '0') + '-'
+            + String(now.getDate()).padStart(2, '0');
+        var fileNameZip = 'chatapp-backup-' + dateStr + '.zip';
+
+        emit({ stage: 'hash', text: '正在计算媒体指纹（增量去重）…' });
+        var store = payload.mediaStore || {};
+        var mediaIndex = {};
+        var mediaItems = {};
+        var sids = Object.keys(store);
+        for (var i = 0; i < sids.length; i++) {
+            var sid = sids[i];
+            var url = store[sid];
+            var parts = dataUrlToBinary(url);
+            var bytes = null;
+            var mime = 'application/octet-stream';
+            if (parts && parts.bytes && parts.bytes.length) {
+                bytes = parts.bytes;
+                mime = parts.mime || mime;
+            } else {
+                bytes = new TextEncoder().encode(String(url));
+                mime = 'text/plain+dataurl';
+            }
+            var hash = await sha256Hex(bytes);
+            mediaIndex[sid] = { hash: hash, mime: mime };
+            if (!mediaItems[hash]) {
+                mediaItems[hash] = { hash: hash, mime: mime, bytes: bytes };
+            }
+            if (i % 20 === 0 && sids.length > 0) {
+                emit({ stage: 'hash', text: '正在计算媒体指纹：' + Math.round((i + 1) / sids.length * 100) + '%' });
+            }
+        }
+
+        var zip = new JSZip();
+        var jsonBody = {
+            type: 'chatapp-backup-v5',
+            formatVersion: 5,
+            dedup: true,
+            appName: payload.appName || 'ChatApp',
+            timestamp: payload.timestamp,
+            sessionId: payload.sessionId,
+            appPrefix: payload.appPrefix,
+            modules: payload.modules,
+            localforage: payload.localforage,
+            localStorage: payload.localStorage,
+            mediaIndex: mediaIndex
+        };
+        zip.file('backup.json', '\uFEFF' + JSON.stringify(jsonBody), {
+            compression: 'DEFLATE',
+            compressionOptions: { level: 5 }
+        });
+        var zipBlob = await zip.generateAsync({ type: 'blob' }, function (meta) {
+            var pct = Math.round(meta.percent || 0);
+            emit({ stage: 'pack', percent: pct, text: '正在打包文本快照：' + pct + '%' });
+        });
+        return {
+            blob: zipBlob,
+            filename: fileNameZip,
+            format: 'zip',
+            dateStr: dateStr,
+            mediaItems: mediaItems,
+            totalMediaCount: Object.keys(mediaItems).length
+        };
+    }
+
     async function createBackupBlob(flags, onProgress) {
         var emit = typeof onProgress === 'function' ? onProgress : function () {};
         emit({ stage: 'read', text: '正在读取本地数据…' });
@@ -624,6 +707,7 @@
         inlineMediaTree: inlineMediaTree,
         buildBackupPayload: buildBackupPayload,
         createBackupBlob: createBackupBlob,
+        createDedupBackupBundle: createDedupBackupBundle,
         exportBackupToFile: exportBackupToFile,
         loadBackupFromFile: loadBackupFromFile,
         loadBackupFromArrayBuffer: loadBackupFromArrayBuffer,

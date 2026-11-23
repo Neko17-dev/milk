@@ -13,6 +13,7 @@ import re
 import shutil
 import sys
 import tempfile
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -31,7 +32,8 @@ KEEP_DAYS = int(os.environ.get("BACKUP_KEEP_DAYS", "30"))
 
 USER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 UPLOAD_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,80}$")
-BACKUP_FILE_RE = re.compile(r"^chatapp-backup-\d{4}-\d{2}-\d{2}\.(zip|json)$")
+HASH_RE = re.compile(r"^[0-9a-f]{16,64}$")
+BACKUP_FILE_RE = re.compile(r"^chatapp-backup-\d{4}-\d{2}-\d{2}(?:\.prev-\d{6})?\.(zip|json)$")
 
 
 def load_user_tokens() -> Tuple[Dict[str, str], bool]:
@@ -122,6 +124,101 @@ def prune_old_backups(target_dir: Path) -> None:
                         shutil.rmtree(d, ignore_errors=True)
                 except OSError:
                     pass
+    # 媒体池安全 GC：仅清理既超过保留期、又不再被任何现存快照引用的媒体文件
+    media_dir = target_dir / "media"
+    if media_dir.is_dir():
+        referenced = set()
+        for p in target_dir.iterdir():
+            if p.is_file() and BACKUP_FILE_RE.match(p.name) and p.suffix == ".zip":
+                try:
+                    with zipfile.ZipFile(p, "r") as zf:
+                        if "backup.json" in zf.namelist():
+                            raw = zf.read("backup.json").decode("utf-8", errors="ignore").lstrip("\ufeff")
+                            meta = json.loads(raw)
+                            idx = meta.get("mediaIndex") or {}
+                            for entry in idx.values():
+                                if isinstance(entry, dict) and entry.get("hash"):
+                                    referenced.add(str(entry["hash"]))
+                except Exception:
+                    pass
+        for mf in media_dir.iterdir():
+            if mf.is_file() and HASH_RE.match(mf.name) and mf.name not in referenced:
+                try:
+                    if mf.stat().st_mtime < cutoff:
+                        mf.unlink()
+                except OSError:
+                    pass
+
+
+def _get_backup_json_size(file_path: Path) -> int:
+    """获取备份包内核心 JSON 的未压缩字节数，用于同日防缩水对比（不受是否剥离媒体影响）。"""
+    try:
+        if file_path.suffix == ".zip":
+            with zipfile.ZipFile(file_path, "r") as zf:
+                if "backup.json" in zf.namelist():
+                    return zf.getinfo("backup.json").file_size
+        return file_path.stat().st_size
+    except Exception:
+        return 0
+
+
+def _append_user_log(user_dir: Path, user_id: str, level: str, stage: str, message: str, detail: Optional[dict] = None) -> None:
+    try:
+        user_dir.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "ts": int(datetime.datetime.now().timestamp() * 1000),
+            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "user": user_id,
+            "level": level,
+            "stage": stage,
+            "message": message,
+            "detail": detail or {},
+            "ua": "server",
+            "ip": "127.0.0.1",
+        }
+        log_file = user_dir / "backup.log.jsonl"
+        lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines() if log_file.is_file() else []
+        lines.append(json.dumps(entry, ensure_ascii=False))
+        if len(lines) > 200:
+            lines = lines[-200:]
+        log_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def commit_backup_with_guard(user_dir: Path, user_id: str, tmp_path: Path, ext: str) -> Tuple[str, bool]:
+    """
+    原子落盘并执行同日防缩水保护：
+    若新包核心 JSON 体积比当天已有包（或 latest）缩水超过 30%，将旧包保留为 .prev-HHMMSS 再覆盖。
+    """
+    date_str = safe_date_str()
+    filename = f"chatapp-backup-{date_str}.{ext}"
+    dest = user_dir / filename
+    latest = user_dir / f"latest.{ext}"
+    baseline = dest if dest.is_file() else (latest if latest.is_file() else None)
+    preserved_prev = False
+
+    if baseline is not None and dest.is_file():
+        old_json_size = _get_backup_json_size(baseline)
+        new_json_size = _get_backup_json_size(tmp_path)
+        if old_json_size > 4096 and 0 < new_json_size < int(old_json_size * 0.7):
+            hhmmss = datetime.datetime.now().strftime("%H%M%S")
+            prev_name = f"chatapp-backup-{date_str}.prev-{hhmmss}.{ext}"
+            shutil.copy2(dest, user_dir / prev_name)
+            preserved_prev = True
+            _append_user_log(
+                user_dir,
+                user_id,
+                "warn",
+                "shrink_guard",
+                f"检测到备份体积较前份缩水超过 30%，已自动保留旧档：{prev_name}",
+                {"oldJsonBytes": old_json_size, "newJsonBytes": new_json_size, "preserved": prev_name},
+            )
+
+    os.replace(tmp_path, dest)
+    shutil.copy2(dest, latest)
+    prune_old_backups(user_dir)
+    return filename, preserved_prev
 
 
 def get_chunk_dir(user_dir: Path, upload_id: str) -> Optional[Path]:
@@ -309,6 +406,40 @@ class BackupHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "logs": logs[:limit]})
             return
 
+        # 管理员只读接口：读取去重媒体池中的单个文件
+        if path in ("/api/backup/admin/media", "/admin/media"):
+            if not self._authenticate_admin():
+                return
+            qs = parse_qs(parsed.query)
+            req_user = (qs.get("user") or [""])[0].strip()
+            req_hash = (qs.get("hash") or [""])[0].strip().lower()
+            if not HASH_RE.match(req_hash):
+                self._send_json(400, {"ok": False, "error": "无效的媒体哈希"})
+                return
+            if MULTI_USER_MODE:
+                if not USER_ID_RE.match(req_user):
+                    self._send_json(400, {"ok": False, "error": "无效的用户名"})
+                    return
+                target_dir = (BACKUP_DIR / req_user / "media").resolve()
+                if target_dir.parent.parent != BACKUP_DIR.resolve():
+                    self._send_json(400, {"ok": False, "error": "非法路径"})
+                    return
+            else:
+                target_dir = (BACKUP_DIR / "media").resolve()
+            target = (target_dir / req_hash).resolve()
+            if target.parent != target_dir or not target.is_file():
+                self._send_json(404, {"ok": False, "error": "媒体文件不存在"})
+                return
+            data = target.read_bytes()
+            self.send_response(200)
+            self._write_cors_headers()
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
         # 管理员只读接口：下载指定用户的指定备份文件
         if path in ("/api/backup/admin/backup", "/admin/backup"):
             if not self._authenticate_admin():
@@ -458,6 +589,64 @@ class BackupHandler(BaseHTTPRequestHandler):
             return
         user_id, user_dir = auth
 
+        # 媒体池去重检查：POST /api/backup/media/check
+        if path in ("/api/backup/media/check", "/media/check"):
+            body = self._read_body(1024 * 1024)
+            if body is None:
+                return
+            try:
+                meta = json.loads(body.decode("utf-8"))
+                hashes = meta.get("hashes") if isinstance(meta, dict) else None
+                if not isinstance(hashes, list):
+                    raise ValueError("hashes must be list")
+            except Exception:
+                self._send_json(400, {"ok": False, "error": "无效的哈希列表"})
+                return
+
+            media_dir = user_dir / "media"
+            missing = []
+            seen = set()
+            for h in hashes[:5000]:
+                hs = str(h).strip().lower()
+                if not HASH_RE.match(hs) or hs in seen:
+                    continue
+                seen.add(hs)
+                if not (media_dir / hs).is_file():
+                    missing.append(hs)
+            self._send_json(200, {"ok": True, "missing": missing, "checked": len(seen)})
+            return
+
+        # 媒体池单文件上传：POST /api/backup/media/put?hash=<sha256>
+        if path in ("/api/backup/media/put", "/media/put"):
+            qs = parse_qs(parsed.query)
+            req_hash = (qs.get("hash") or [""])[0].strip().lower()
+            if not HASH_RE.match(req_hash):
+                self._send_json(400, {"ok": False, "error": "无效的媒体哈希"})
+                return
+            media_dir = user_dir / "media"
+            dest = media_dir / req_hash
+            if dest.is_file():
+                self._send_json(200, {"ok": True, "hash": req_hash, "existed": True})
+                return
+            data = self._read_body(25 * 1024 * 1024)
+            if data is None:
+                return
+            media_dir.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(prefix=".media-", dir=str(media_dir))
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(data)
+                os.replace(tmp_path, dest)
+            except Exception as exc:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                self._send_json(500, {"ok": False, "error": f"媒体写入失败: {exc}"})
+                return
+            self._send_json(200, {"ok": True, "hash": req_hash, "bytes": len(data)})
+            return
+
         # 客户端上报备份日志：POST /api/backup/log
         if path in ("/api/backup/log", "/log"):
             body = self._read_body(16 * 1024)
@@ -580,13 +769,8 @@ class BackupHandler(BaseHTTPRequestHandler):
                     raise ValueError("仅接受 ZIP 或 JSON 备份文件")
 
                 ext = "zip" if is_zip else "json"
-                filename = f"chatapp-backup-{safe_date_str()}.{ext}"
-                dest = user_dir / filename
-                latest = user_dir / f"latest.{ext}"
-                os.replace(tmp_path, dest)
-                shutil.copy2(dest, latest)
+                filename, preserved_prev = commit_backup_with_guard(user_dir, user_id, Path(tmp_path), ext)
                 shutil.rmtree(chunk_dir, ignore_errors=True)
-                prune_old_backups(user_dir)
             except Exception as exc:
                 try:
                     os.unlink(tmp_path)
@@ -595,7 +779,7 @@ class BackupHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"ok": False, "error": f"合并失败: {exc}"})
                 return
 
-            self._send_json(200, {"ok": True, "user": user_id, "file": filename, "bytes": total_bytes})
+            self._send_json(200, {"ok": True, "user": user_id, "file": filename, "bytes": total_bytes, "preservedPrev": preserved_prev})
             return
 
         # 兼容单次整包上传：POST /api/backup
@@ -617,18 +801,13 @@ class BackupHandler(BaseHTTPRequestHandler):
             return
 
         ext = "zip" if is_zip else "json"
-        filename = f"chatapp-backup-{safe_date_str()}.{ext}"
         user_dir.mkdir(parents=True, exist_ok=True)
-        dest = user_dir / filename
-        latest = user_dir / f"latest.{ext}"
 
         fd, tmp_path = tempfile.mkstemp(prefix=".upload-", dir=str(user_dir))
         try:
             with os.fdopen(fd, "wb") as f:
                 f.write(data)
-            os.replace(tmp_path, dest)
-            shutil.copy2(dest, latest)
-            prune_old_backups(user_dir)
+            filename, preserved_prev = commit_backup_with_guard(user_dir, user_id, Path(tmp_path), ext)
         except Exception as exc:
             try:
                 os.unlink(tmp_path)
@@ -637,7 +816,7 @@ class BackupHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"ok": False, "error": f"写入失败: {exc}"})
             return
 
-        self._send_json(200, {"ok": True, "user": user_id, "file": filename, "bytes": len(data)})
+        self._send_json(200, {"ok": True, "user": user_id, "file": filename, "bytes": len(data), "preservedPrev": preserved_prev})
 
     def log_message(self, fmt: str, *args) -> None:
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")

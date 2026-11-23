@@ -487,7 +487,33 @@
         return '';
     }
 
-    async function parseBackupBlob(blob) {
+    var remoteMediaCache = {};
+    async function loadRemoteMediaIntoImg(imgEl, mediaRef) {
+        var key = mediaRef.__uid + ':' + mediaRef.__remoteHash;
+        if (remoteMediaCache[key]) {
+            imgEl.src = remoteMediaCache[key];
+            return;
+        }
+        try {
+            var url = '/api/backup/admin/media?user=' + encodeURIComponent(mediaRef.__uid)
+                + '&hash=' + encodeURIComponent(mediaRef.__remoteHash);
+            var resp = await fetch(url, { headers: { 'X-Admin-Token': adminToken } });
+            if (!resp.ok) return;
+            var ab = await resp.arrayBuffer();
+            if (mediaRef.__mime === 'text/plain+dataurl') {
+                var txt = new TextDecoder('utf-8').decode(ab);
+                remoteMediaCache[key] = txt;
+                imgEl.src = txt;
+            } else {
+                var objUrl = URL.createObjectURL(new Blob([ab], { type: mediaRef.__mime || 'application/octet-stream' }));
+                activeObjectUrls.push(objUrl);
+                remoteMediaCache[key] = objUrl;
+                imgEl.src = objUrl;
+            }
+        } catch (e) {}
+    }
+
+    async function parseBackupBlob(blob, uid) {
         revokeObjectUrls();
         var buf = await blob.arrayBuffer();
         var u8 = new Uint8Array(buf);
@@ -509,7 +535,12 @@
             for (var i = 0; i < ids.length; i++) {
                 var id = ids[i];
                 var entry = idx[id];
-                var zf = entry && entry.path ? zip.file(entry.path) : null;
+                if (!entry) continue;
+                if (entry.hash && !entry.path) {
+                    mediaMap[id] = { __remoteHash: entry.hash, __mime: entry.mime || 'image/jpeg', __uid: uid || activeUserId };
+                    continue;
+                }
+                var zf = entry.path ? zip.file(entry.path) : null;
                 if (!zf) continue;
                 if (entry.mime === 'text/plain+dataurl') {
                     mediaMap[id] = await zf.async('string');
@@ -602,7 +633,7 @@
             }
             var blob = await resp.blob();
             currentRawBlob = blob;
-            var parsed = await parseBackupBlob(blob);
+            var parsed = await parseBackupBlob(blob, uid);
             currentSessions = parsed.sessions;
             activeSessionIdx = 0;
             pageLimit = 200;
@@ -738,15 +769,20 @@
                 bubble.appendChild(txt);
             }
 
-            var imgSrc = resolveMediaRef(m.image, session.mediaMap);
-            if (imgSrc) {
+            var imgRef = resolveMediaRef(m.image, session.mediaMap);
+            if (imgRef) {
                 var img = document.createElement('img');
                 img.className = 'msg-img';
-                img.src = imgSrc;
                 img.alt = '图片';
                 img.loading = 'lazy';
+                if (typeof imgRef === 'object' && imgRef.__remoteHash) {
+                    loadRemoteMediaIntoImg(img, imgRef);
+                } else {
+                    img.src = imgRef;
+                }
                 img.addEventListener('click', function () {
-                    $('lightbox-img').src = imgSrc;
+                    if (!img.src) return;
+                    $('lightbox-img').src = img.src;
                     $('lightbox').classList.add('open');
                 });
                 bubble.appendChild(img);
