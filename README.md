@@ -27,7 +27,19 @@
 
 ---
 
-## 二、项目目录结构
+## 二、界面截图预览
+
+| 主界面与 PWA / 持久化存储状态 | 数据管理与真实配额 / 实时上传 |
+| :---: | :---: |
+| ![主界面与 PWA 状态](docs/screenshots/home-pwa-storage.jpg) | ![存储用量与实时上传](docs/screenshots/storage-and-upload.jpg) |
+
+| 服务器每日自动备份配置弹窗 | 每日云端备份完成状态 |
+| :---: | :---: |
+| ![服务器每日自动备份弹窗](docs/screenshots/cloud-backup-modal.png) | ![今日已备份状态](docs/screenshots/backup-done.png) |
+
+---
+
+## 三、项目目录结构
 
 ```text
 milk/
@@ -66,7 +78,7 @@ milk/
 
 ---
 
-## 三、服务器部署（frp + Caddy + systemd）
+## 四、服务器部署（frp + Caddy + systemd）
 
 ### 1. 拉取项目代码
 
@@ -169,7 +181,7 @@ curl https://milk.starleave.cn/api/backup/health
 
 ---
 
-## 四、后端 API 接口清单
+## 五、后端 API 接口清单
 
 所有接口均由 `server/backup-receiver.py` 提供，经 Caddy 反代到 `/api/backup*`：
 
@@ -189,7 +201,7 @@ curl https://milk.starleave.cn/api/backup/health
 
 ---
 
-## 五、日常使用指南
+## 六、日常使用指南
 
 ### 1. 给用户分发一键云端备份链接
 
@@ -222,7 +234,7 @@ curl -H "X-Backup-Token: 该用户的专属密钥" https://milk.starleave.cn/api
 
 ---
 
-## 六、版本管理与更新发布（`version.json`）
+## 七、版本管理与更新发布（`version.json`）
 
 根目录的 `version.json` 同时控制 **网页热更新** 与 **Android APK 更新**，两套字段互相独立：
 
@@ -246,7 +258,7 @@ curl -H "X-Backup-Token: 该用户的专属密钥" https://milk.starleave.cn/api
 
 ---
 
-## 七、Android APK 云端自动构建（GitHub Actions）
+## 八、Android APK 云端自动构建（GitHub Actions）
 
 无需本地安装 Android Studio：
 
@@ -262,7 +274,7 @@ curl -H "X-Backup-Token: 该用户的专属密钥" https://milk.starleave.cn/api
 
 ---
 
-## 八、常用运维与上游同步命令
+## 九、常用运维与上游同步命令
 
 ### 服务器拉取最新代码并重启备份服务
 
