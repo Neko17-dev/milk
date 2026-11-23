@@ -4,13 +4,17 @@
 
 ## 1. 在服务器创建 systemd 常驻服务
 
-先生成一个随机密钥（记下来，后面网页端也要填这个）：
+### 多用户模式（推荐：每位用户独立文件夹，互不干扰）
+
+为每位用户生成一个随机密钥：
 
 ```bash
 openssl rand -hex 24
 ```
 
-创建 `/etc/systemd/system/milk-backup.service`（把 `替换成你的随机密钥` 改成上面生成的密钥）：
+**方式 A：直接在 systemd 环境变量配置 `BACKUP_TOKENS`**（格式 `用户名:密钥,用户名2:密钥2`，用户名仅限字母/数字/`_`/`-`）：
+
+创建 `/etc/systemd/system/milk-backup.service`：
 
 ```ini
 [Unit]
@@ -20,7 +24,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/data/www/milk/server
-Environment=BACKUP_TOKEN=替换成你的随机密钥
+Environment=BACKUP_TOKENS=alice:密钥A,bob:密钥B
 Environment=BACKUP_DIR=/data/milk-backups
 Environment=BACKUP_PORT=8787
 Environment=BACKUP_KEEP_DAYS=30
@@ -32,6 +36,29 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 ```
+
+**方式 B：用户较多时使用独立 JSON 文件 `BACKUP_TOKENS_FILE`**（权限设为 `600`）：
+
+```json
+{
+  "alice": "密钥A",
+  "bob": "密钥B"
+}
+```
+在 `milk-backup.service` 中把 `BACKUP_TOKENS=...` 换成 `Environment=BACKUP_TOKENS_FILE=/data/milk-backups/tokens.json` 即可。
+
+备份目录结构会自动隔离为：
+```text
+/data/milk-backups/
+├── alice/
+│   ├── chatapp-backup-2026-11-23.zip
+│   └── latest.zip
+└── bob/
+    ├── chatapp-backup-2026-11-23.zip
+    └── latest.zip
+```
+
+*(单用户兼容：如果只配 `Environment=BACKUP_TOKEN=单个密钥`，仍直接保存在 `/data/milk-backups/` 根目录。)*
 
 启动并设为开机自启：
 
