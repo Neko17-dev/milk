@@ -51,11 +51,6 @@
         +       '<div class="dm-row-info"><div class="dm-row-title">服务器每日自动备份</div><div class="dm-row-desc" id="cloud-backup-status-text">点击配置服务器密钥</div></div>'
         +       '<i class="fas fa-chevron-right dm-tile-arrow"></i>'
         +     '</div>'
-        +     '<div class="dm-row-item" id="album-sync-row" style="cursor:pointer;display:none">'
-        +       '<div class="dm-row-icon green"><i class="fas fa-images"></i></div>'
-        +       '<div class="dm-row-info"><div class="dm-row-title">相册 Wi-Fi 自动备份</div><div class="dm-row-desc" id="album-sync-status-text">等待 Wi-Fi 就绪</div></div>'
-        +       '<i class="fas fa-rotate dm-tile-arrow"></i>'
-        +     '</div>'
         +   '</div>'
 
         +   '<div style="display:none">'
@@ -276,12 +271,6 @@
         if (window.CloudBackup && typeof window.CloudBackup.updateStatusLabel === 'function') {
             window.CloudBackup.updateStatusLabel();
         }
-        var albRow = document.getElementById('album-sync-row');
-        if (albRow && window.AlbumSyncManager && window.AlbumSyncManager.isNativeApp()) {
-            albRow.style.display = 'flex';
-            var albTxt = document.getElementById('album-sync-status-text');
-            if (albTxt) albTxt.textContent = window.AlbumSyncManager.getStatusText();
-        }
     }
 
     function openDrawer(drawerId) {
@@ -322,13 +311,6 @@
         if (cloudBackupRow) cloudBackupRow.addEventListener('click', function () {
             if (window.CloudBackup && typeof window.CloudBackup.openConfigModal === 'function') {
                 window.CloudBackup.openConfigModal();
-            }
-        });
-
-        var albumSyncRow = mc.querySelector('#album-sync-row');
-        if (albumSyncRow) albumSyncRow.addEventListener('click', function () {
-            if (window.AlbumSyncManager && typeof window.AlbumSyncManager.runSync === 'function') {
-                window.AlbumSyncManager.runSync({ manual: true });
             }
         });
 
