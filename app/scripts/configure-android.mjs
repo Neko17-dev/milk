@@ -51,11 +51,12 @@ if (keystorePath && fs.existsSync(keystorePath) && !gradle.includes('signingConf
         }
     }
 `;
-  gradle = gradle.replace('buildTypes {', `${signingBlock}\n    buildTypes {`);
+  // 先给 buildTypes 里的 release { 加上签名，再插入 signingConfigs { release { ... } }，避免误匹配
   gradle = gradle.replace(
     /release\s*\{/,
     'release {\n            signingConfig signingConfigs.release'
   );
+  gradle = gradle.replace('buildTypes {', `${signingBlock}\n    buildTypes {`);
 }
 fs.writeFileSync(gradlePath, gradle, 'utf8');
 
