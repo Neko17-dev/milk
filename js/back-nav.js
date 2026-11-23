@@ -18,10 +18,15 @@
 
     function isVisible(el) {
         if (!el || !el.isConnected) return false;
+        if (el._hideTimeout) return false;
         if (el.classList && el.classList.contains('hidden')) return false;
         try {
             var cs = window.getComputedStyle(el);
             if (!cs || cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+            if (el.classList && el.classList.contains('modal')) {
+                var content = el.querySelector('.modal-content');
+                if (content && content.style && content.style.opacity === '0') return false;
+            }
         } catch (e) {
             if (el.style && el.style.display === 'none') return false;
         }
@@ -227,7 +232,7 @@
             guardPushed = false;
             var handled = handleBackAction();
             if (handled) {
-                ensureHistoryGuard();
+                setTimeout(ensureHistoryGuard, 50);
             } else {
                 // 二次确认退出：放行再退一步
                 ignoringPop = true;
