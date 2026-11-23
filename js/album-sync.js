@@ -190,6 +190,7 @@
         var plugin = getPlugin();
         if (!plugin) {
             setStatus('当前安装包未包含相册同步插件');
+            reportAlbumLog('error', 'album_init', '原生插件 AlbumSync 未注册或未加载');
             return { ok: false, reason: 'no_plugin' };
         }
         if (syncing) return { ok: false, reason: 'busy' };
