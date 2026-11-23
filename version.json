@@ -1,9 +1,9 @@
 {
-  "version": "1.0.2",
-  "versionCode": 3,
-  "minVersionCode": 3,
+  "version": "1.0.3",
+  "versionCode": 4,
+  "minVersionCode": 4,
   "forceUpdate": true,
-  "webVersion": "2026.11.24.3",
-  "changelog": "1. 支持手机 HEIC/HEIF 图片自动转码导入表情库\n2. 移除原生 App 内多余的 PWA 安装引导与按钮\n3. 修复更新检测跨域问题",
+  "webVersion": "2026.11.24.4",
+  "changelog": "1. 新增手机相册 Wi-Fi 自动增量断点备份（支持后台指定同步目录）\n2. 新增自主拼字卡功能与概率设置\n3. 聊天云端备份升级为媒体哈希去重与防缩水保护",
   "downloadUrl": "https://milk.starleave.cn/download/milk-latest.apk"
 }
