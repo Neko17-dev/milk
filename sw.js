@@ -1,4 +1,4 @@
-const CACHE_NAME = 'chuanxun-v12';
+const CACHE_NAME = 'chuanxun-v13';
 
 // 需要预缓存的核心资源（离线可用）
 const PRECACHE_URLS = [
@@ -60,22 +60,31 @@ self.addEventListener('fetch', event => {
   if (url.protocol === 'chrome-extension:') return;
   if (url.origin === self.location.origin && (url.pathname.startsWith('/api/') || url.pathname.startsWith('/admin') || url.pathname === '/version.json')) return;
 
-  // 页面导航 / HTML：网络优先，离线回退缓存（避免发版后需刷新两次）
-  if (url.origin === self.location.origin && (event.request.mode === 'navigate' || url.pathname === '/' || url.pathname === '/index.html')) {
-    event.respondWith(
-      fetch(event.request).then(response => {
-        if (response && response.status === 200) {
-          const responseClone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(event.request, responseClone));
-        }
-        return response;
-      }).catch(() => caches.match(event.request).then(cached => cached || caches.match('/index.html')))
-    );
-    return;
-  }
-
-  // 本地资源：缓存优先，网络兜底
+  // 本地 HTML / JS / CSS：网络优先，离线回退缓存（在线时永远立刻拿到最新版）
   if (url.origin === self.location.origin) {
+    const isCodeAsset = event.request.mode === 'navigate'
+      || url.pathname === '/'
+      || url.pathname.endsWith('.html')
+      || url.pathname.endsWith('.js')
+      || url.pathname.endsWith('.css');
+
+    if (isCodeAsset) {
+      event.respondWith(
+        fetch(event.request).then(response => {
+          if (response && response.status === 200) {
+            const responseClone = response.clone();
+            caches.open(CACHE_NAME).then(cache => cache.put(event.request, responseClone));
+          }
+          return response;
+        }).catch(() => caches.match(event.request).then(cached => {
+          if (cached) return cached;
+          if (event.request.mode === 'navigate') return caches.match('/index.html');
+        }))
+      );
+      return;
+    }
+
+    // 图标等静态资源：缓存优先，网络兜底
     event.respondWith(
       caches.match(event.request).then(cached => {
         if (cached) return cached;
@@ -85,11 +94,6 @@ self.addEventListener('fetch', event => {
             caches.open(CACHE_NAME).then(cache => cache.put(event.request, responseClone));
           }
           return response;
-        }).catch(() => {
-          // 离线且无缓存时，对 HTML 请求返回主页
-          if (event.request.headers.get('accept').includes('text/html')) {
-            return caches.match('/index.html');
-          }
         });
       })
     );

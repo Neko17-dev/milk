@@ -23,6 +23,48 @@
             e.preventDefault();
             window.__deferredPwaPrompt = e;
         });
+
+        // 进入网页第一步：检查服务端 version.json，发现新版本立即清缓存并热更新
+        (function checkWebHotUpdate() {
+            var isNative = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform());
+            if (isNative || !window.fetch) return;
+            var KEY = 'milk_web_version';
+            var GUARD = 'milk_hot_reloaded_ver';
+            fetch('/version.json?t=' + Date.now(), { cache: 'no-store' })
+                .then(function (r) { return r.ok ? r.json() : null; })
+                .then(function (data) {
+                    if (!data || !data.webVersion) return;
+                    var remoteVer = String(data.webVersion);
+                    var localVer = '';
+                    try { localVer = localStorage.getItem(KEY) || ''; } catch (e) {}
+                    if (!localVer) {
+                        try { localStorage.setItem(KEY, remoteVer); } catch (e) {}
+                        return;
+                    }
+                    if (localVer === remoteVer) return;
+                    try {
+                        if (sessionStorage.getItem(GUARD) === remoteVer) return;
+                        sessionStorage.setItem(GUARD, remoteVer);
+                        localStorage.setItem(KEY, remoteVer);
+                    } catch (e) {}
+                    console.log('[hot-update] 发现新版本 ' + localVer + ' -> ' + remoteVer + '，正在清理缓存并刷新…');
+                    var tasks = [];
+                    if (window.caches && typeof caches.keys === 'function') {
+                        tasks.push(caches.keys().then(function (ks) {
+                            return Promise.all(ks.map(function (k) { return caches.delete(k); }));
+                        }).catch(function () {}));
+                    }
+                    if (navigator.serviceWorker && typeof navigator.serviceWorker.getRegistrations === 'function') {
+                        tasks.push(navigator.serviceWorker.getRegistrations().then(function (regs) {
+                            return Promise.all(regs.map(function (reg) { return reg.update().catch(function () {}); }));
+                        }).catch(function () {}));
+                    }
+                    Promise.all(tasks).finally(function () {
+                        window.location.reload();
+                    });
+                })
+                .catch(function () {});
+        })();
     </script>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js"></script>
