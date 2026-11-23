@@ -45,6 +45,13 @@
         +       '<i class="fas fa-chevron-right dm-tile-arrow"></i>'
         +     '</div>'
         +   '</div>'
+        +   '<div class="dm-row-card" style="margin-top:10px">'
+        +     '<div class="dm-row-item" id="cloud-backup-config-row" style="cursor:pointer">'
+        +       '<div class="dm-row-icon blue"><i class="fas fa-cloud-arrow-up"></i></div>'
+        +       '<div class="dm-row-info"><div class="dm-row-title">服务器每日自动备份</div><div class="dm-row-desc" id="cloud-backup-status-text">点击配置服务器密钥</div></div>'
+        +       '<i class="fas fa-chevron-right dm-tile-arrow"></i>'
+        +     '</div>'
+        +   '</div>'
 
         +   '<div style="display:none">'
         +     '<button id="export-all-settings"></button>'
@@ -261,6 +268,9 @@
         if (n) n.checked = localStorage.getItem('notifEnabled') === '1'
                         && 'Notification' in window
                         && Notification.permission === 'granted';
+        if (window.CloudBackup && typeof window.CloudBackup.updateStatusLabel === 'function') {
+            window.CloudBackup.updateStatusLabel();
+        }
     }
 
     function openDrawer(drawerId) {
@@ -296,6 +306,13 @@
 
         var tileChatBackup = mc.querySelector('#dm-tile-chat-backup');
         if (tileChatBackup) tileChatBackup.addEventListener('click', function () { openDrawer('dm-drawer-chat'); });
+
+        var cloudBackupRow = mc.querySelector('#cloud-backup-config-row');
+        if (cloudBackupRow) cloudBackupRow.addEventListener('click', function () {
+            if (window.CloudBackup && typeof window.CloudBackup.openConfigModal === 'function') {
+                window.CloudBackup.openConfigModal();
+            }
+        });
 
         var fullDrawer = document.getElementById('dm-drawer-full');
         if (fullDrawer) {

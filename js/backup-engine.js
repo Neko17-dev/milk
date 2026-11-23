@@ -330,6 +330,62 @@
         return await loadBackupFromArrayBuffer(ab);
     }
 
+    async function createBackupBlob(flags) {
+        var payload = await buildBackupPayload(flags);
+        var now = new Date();
+        var dateStr = now.getFullYear() + '-'
+            + String(now.getMonth() + 1).padStart(2, '0') + '-'
+            + String(now.getDate()).padStart(2, '0');
+        var fileNameZip = 'chatapp-backup-' + dateStr + '.zip';
+
+        if (typeof JSZip !== 'undefined') {
+            try {
+                var zip = new JSZip();
+                var store = payload.mediaStore || {};
+                var mediaIndex = {};
+                for (var sid in store) {
+                    if (!Object.prototype.hasOwnProperty.call(store, sid)) continue;
+                    var url = store[sid];
+                    var parts = dataUrlToBinary(url);
+                    var path = 'media/' + sid;
+                    if (parts && parts.bytes && parts.bytes.length) {
+                        zip.file(path, parts.bytes, { binary: true });
+                        mediaIndex[sid] = { path: path, mime: parts.mime };
+                    } else {
+                        var txtPath = path + '.txt';
+                        zip.file(txtPath, String(url));
+                        mediaIndex[sid] = { path: txtPath, mime: 'text/plain+dataurl' };
+                    }
+                }
+                var jsonBody = {
+                    type: 'chatapp-backup-v5',
+                    formatVersion: 5,
+                    appName: payload.appName || 'ChatApp',
+                    timestamp: payload.timestamp,
+                    sessionId: payload.sessionId,
+                    appPrefix: payload.appPrefix,
+                    modules: payload.modules,
+                    localforage: payload.localforage,
+                    localStorage: payload.localStorage,
+                    mediaIndex: mediaIndex
+                };
+                zip.file('backup.json', '\uFEFF' + JSON.stringify(jsonBody));
+                var zipBlob = await zip.generateAsync({
+                    type: 'blob',
+                    compression: 'DEFLATE',
+                    compressionOptions: { level: 6 }
+                });
+                return { blob: zipBlob, filename: fileNameZip, format: 'zip', dateStr: dateStr };
+            } catch (zipErr) {
+                console.error('[backup] ZIP 打包失败，回退 JSON', zipErr);
+            }
+        }
+
+        var str = serializeBackupV4(payload);
+        var jsonBlob = new Blob([str], { type: 'application/json;charset=utf-8' });
+        return { blob: jsonBlob, filename: 'chatapp-backup-' + dateStr + '.json', format: 'json', dateStr: dateStr };
+    }
+
     async function exportBackupToFile(flags) {
         if (typeof showNotification === 'function') showNotification('正在打包备份（ZIP：结构与媒体分离）…', 'info', 4000);
         var payload = await buildBackupPayload(flags);
@@ -558,6 +614,7 @@
         extractMediaTree: extractMediaTree,
         inlineMediaTree: inlineMediaTree,
         buildBackupPayload: buildBackupPayload,
+        createBackupBlob: createBackupBlob,
         exportBackupToFile: exportBackupToFile,
         loadBackupFromFile: loadBackupFromFile,
         loadBackupFromArrayBuffer: loadBackupFromArrayBuffer,
