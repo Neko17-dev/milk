@@ -7,6 +7,7 @@
 
 import datetime
 import hmac
+import io
 import json
 import os
 import re
@@ -88,6 +89,44 @@ REMOTE_COMMANDS: Dict[str, Dict[str, list]] = {}
 REMOTE_LOGS: Dict[str, list] = {}
 REMOTE_RESULTS: Dict[str, list] = {}
 ALLOWED_REMOTE_CMDS = {"inspect", "backup_chat", "sync_album", "reload_cache", "check_update", "toast"}
+WEB_BUNDLE_CACHE = {"ver": "", "bytes": b""}
+WEB_BUNDLE_LOCK = threading.Lock()
+
+
+def build_web_bundle_zip() -> Tuple[str, bytes]:
+    """将项目根目录的前端静态文件打成内存 ZIP，供原生 App 离线热更新使用（按 webVersion 缓存）。"""
+    root_dir = Path(__file__).resolve().parent.parent
+    ver_file = root_dir / "version.json"
+    web_ver = "0"
+    if ver_file.is_file():
+        try:
+            ver_data = json.loads(ver_file.read_text(encoding="utf-8"))
+            web_ver = str(ver_data.get("webVersion") or ver_data.get("version") or "0")
+        except Exception:
+            pass
+
+    with WEB_BUNDLE_LOCK:
+        if WEB_BUNDLE_CACHE["ver"] == web_ver and WEB_BUNDLE_CACHE["bytes"]:
+            return web_ver, WEB_BUNDLE_CACHE["bytes"]
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+            for single in ("index.html", "manifest.json"):
+                fp = root_dir / single
+                if fp.is_file():
+                    zf.write(fp, single)
+            for folder in ("css", "js", "icons"):
+                d = root_dir / folder
+                if not d.is_dir():
+                    continue
+                for sub in d.rglob("*"):
+                    if sub.is_file():
+                        rel = sub.relative_to(root_dir).as_posix()
+                        zf.write(sub, rel)
+        raw = buf.getvalue()
+        WEB_BUNDLE_CACHE["ver"] = web_ver
+        WEB_BUNDLE_CACHE["bytes"] = raw
+        return web_ver, raw
 
 
 def resolve_user_by_token(token: str) -> Optional[Tuple[str, Path]]:
@@ -393,6 +432,22 @@ class BackupHandler(BaseHTTPRequestHandler):
                 self._send_json(200, ver_data)
             except Exception as exc:
                 self._send_json(500, {"ok": False, "error": f"读取版本信息失败: {exc}"})
+            return
+
+        # 公开前端热更新资源包（供 Capacitor APK 下载并离线热更新）
+        if path in ("/api/backup/web-bundle", "/web-bundle"):
+            try:
+                web_ver, data = build_web_bundle_zip()
+                self.send_response(200)
+                self._write_cors_headers()
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("X-Web-Version", web_ver)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+            except Exception as exc:
+                self._send_json(500, {"ok": False, "error": f"打包前端资源失败: {exc}"})
             return
 
         # 管理员只读接口：列出所有用户及其备份文件

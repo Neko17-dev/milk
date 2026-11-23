@@ -179,6 +179,31 @@
                 showUpdateModal(remote, current, isForced);
                 return { hasUpdate: true, forced: isForced, remote: remote };
             }
+
+            // 原生 APK 前端热更新：当不需要重装 APK 时，检查 webVersion 增量拉取离线资源包
+            var plugin = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.AlbumSync;
+            if (isNativeApp() && plugin && typeof plugin.applyHotUpdate === 'function' && remote.webVersion) {
+                var remoteWebVer = String(remote.webVersion);
+                var localWebVer = localStorage.getItem('milk_apk_web_ver') || '';
+                var guardVer = sessionStorage.getItem('milk_apk_hot_guard') || '';
+                if (remoteWebVer !== localWebVer && guardVer !== remoteWebVer) {
+                    sessionStorage.setItem('milk_apk_hot_guard', remoteWebVer);
+                    if (!silent && typeof showNotification === 'function') {
+                        showNotification('正在下载前端热更新 (' + remoteWebVer + ')…', 'info', 3000);
+                    }
+                    try {
+                        await plugin.applyHotUpdate({
+                            url: 'https://milk.starleave.cn/api/backup/web-bundle',
+                            webVersion: remoteWebVer
+                        });
+                        localStorage.setItem('milk_apk_web_ver', remoteWebVer);
+                        return { hasUpdate: true, hotUpdated: true, webVersion: remoteWebVer };
+                    } catch (hotErr) {
+                        console.warn('[app-updater] APK 前端热更新失败:', hotErr);
+                    }
+                }
+            }
+
             if (!silent && typeof showNotification === 'function') {
                 showNotification('当前已是最新版本（v' + current.version + ' / code ' + current.versionCode + '）', 'success', 3000);
             }

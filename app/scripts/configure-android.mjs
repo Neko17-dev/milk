@@ -142,8 +142,14 @@ import com.getcapacitor.annotation.PermissionCallback;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -527,33 +533,166 @@ public class AlbumSyncPlugin extends Plugin {
             }
         });
     }
+
+    private void deleteDir(File dir) {
+        if (dir == null || !dir.exists()) return;
+        File[] children = dir.listFiles();
+        if (children != null) {
+            for (File c : children) {
+                if (c.isDirectory()) deleteDir(c);
+                else c.delete();
+            }
+        }
+        dir.delete();
+    }
+
+    @PluginMethod
+    public void applyHotUpdate(PluginCall call) {
+        String bundleUrl = call.getString("url", "https://milk.starleave.cn/api/backup/web-bundle");
+        String webVersion = call.getString("webVersion", "");
+        if (bundleUrl == null || bundleUrl.isEmpty()) {
+            call.reject("无效的热更新地址");
+            return;
+        }
+        getBridge().execute(() -> {
+            File filesDir = getContext().getFilesDir();
+            File staging = new File(filesDir, "hot-www-staging");
+            File target = new File(filesDir, "hot-www");
+            try {
+                deleteDir(staging);
+                staging.mkdirs();
+
+                HttpURLConnection conn = (HttpURLConnection) new URL(bundleUrl + "?t=" + System.currentTimeMillis()).openConnection();
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(45000);
+                int code = conn.getResponseCode();
+                if (code < 200 || code >= 300) {
+                    throw new Exception("HTTP " + code);
+                }
+
+                try (ZipInputStream zis = new ZipInputStream(conn.getInputStream())) {
+                    String canonRoot = staging.getCanonicalPath() + File.separator;
+                    ZipEntry entry;
+                    byte[] buf = new byte[16384];
+                    while ((entry = zis.getNextEntry()) != null) {
+                        if (entry.isDirectory()) continue;
+                        File outFile = new File(staging, entry.getName());
+                        if (!outFile.getCanonicalPath().startsWith(canonRoot)) {
+                            throw new SecurityException("非法 ZIP 路径: " + entry.getName());
+                        }
+                        File parent = outFile.getParentFile();
+                        if (parent != null) parent.mkdirs();
+                        try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                            int n;
+                            while ((n = zis.read(buf)) > 0) fos.write(buf, 0, n);
+                        }
+                    }
+                }
+
+                File indexFile = new File(staging, "index.html");
+                if (!indexFile.isFile()) {
+                    throw new Exception("热更新包缺少 index.html");
+                }
+
+                // 保留当前安装包的原生版本号信息，写入 app-version.js 并确保 index.html 引入
+                android.content.pm.PackageInfo pInfo = getContext().getPackageManager().getPackageInfo(getContext().getPackageName(), 0);
+                String vName = pInfo.versionName != null ? pInfo.versionName : "1.0.0";
+                long vCode = Build.VERSION.SDK_INT >= 28 ? pInfo.getLongVersionCode() : pInfo.versionCode;
+                File jsDir = new File(staging, "js");
+                jsDir.mkdirs();
+                try (FileOutputStream vFos = new FileOutputStream(new File(jsDir, "app-version.js"))) {
+                    String vJs = "window.APP_VERSION = \\"" + vName.replace("\\"", "") + "\\";\\nwindow.APP_VERSION_CODE = " + vCode + ";\\n";
+                    vFos.write(vJs.getBytes(StandardCharsets.UTF_8));
+                }
+
+                byte[] idxBytes = new byte[(int) indexFile.length()];
+                try (FileInputStream fis = new FileInputStream(indexFile)) {
+                    int read = 0;
+                    while (read < idxBytes.length) {
+                        int r = fis.read(idxBytes, read, idxBytes.length - read);
+                        if (r <= 0) break;
+                        read += r;
+                    }
+                }
+                String idxHtml = new String(idxBytes, StandardCharsets.UTF_8);
+                if (!idxHtml.contains("js/app-version.js")) {
+                    idxHtml = idxHtml.replace(
+                        "<script src=\\"js/app-updater.js\\"></script>",
+                        "<script src=\\"js/app-version.js\\"></script>\\n    <script src=\\"js/app-updater.js\\"></script>"
+                    );
+                    try (FileOutputStream iFos = new FileOutputStream(indexFile)) {
+                        iFos.write(idxHtml.getBytes(StandardCharsets.UTF_8));
+                    }
+                }
+
+                try (FileOutputStream rFos = new FileOutputStream(new File(staging, ".ready"))) {
+                    rFos.write((vCode + "|" + webVersion).getBytes(StandardCharsets.UTF_8));
+                }
+
+                deleteDir(target);
+                if (!staging.renameTo(target)) {
+                    throw new Exception("替换热更新目录失败");
+                }
+
+                String hotPath = target.getAbsolutePath();
+                getActivity().runOnUiThread(() -> {
+                    getBridge().setServerBasePath(hotPath);
+                });
+
+                JSObject ret = new JSObject();
+                ret.put("ok", true);
+                ret.put("webVersion", webVersion);
+                call.resolve(ret);
+            } catch (Exception e) {
+                deleteDir(staging);
+                call.reject("热更新失败: " + e.getMessage());
+            }
+        });
+    }
 }
 `;
   fs.writeFileSync(path.join(javaPkgDir, 'AlbumSyncPlugin.java'), pluginJava, 'utf8');
 
   const mainActPath = path.join(javaPkgDir, 'MainActivity.java');
   if (fs.existsSync(mainActPath)) {
-    let mainAct = fs.readFileSync(mainActPath, 'utf8');
-    if (!mainAct.includes('AlbumSyncPlugin')) {
-      if (!mainAct.includes('import android.os.Bundle;')) {
-        mainAct = mainAct.replace(
-          'import com.getcapacitor.BridgeActivity;',
-          'import android.os.Bundle;\nimport com.getcapacitor.BridgeActivity;'
-        );
-      }
-      if (!mainAct.includes('public void onCreate(')) {
-        mainAct = mainAct.replace(
-          /public class MainActivity extends BridgeActivity\s*\{/,
-          `public class MainActivity extends BridgeActivity {\n    @Override\n    public void onCreate(Bundle savedInstanceState) {\n        registerPlugin(AlbumSyncPlugin.class);\n        super.onCreate(savedInstanceState);\n    }`
-        );
-      } else {
-        mainAct = mainAct.replace(
-          'super.onCreate(savedInstanceState);',
-          'registerPlugin(AlbumSyncPlugin.class);\n        super.onCreate(savedInstanceState);'
-        );
-      }
-      fs.writeFileSync(mainActPath, mainAct, 'utf8');
+    const mainActJava = `package cn.starleave.milk;
+
+import android.content.pm.PackageInfo;
+import android.os.Build;
+import android.os.Bundle;
+import com.getcapacitor.BridgeActivity;
+import java.io.File;
+import java.io.FileInputStream;
+import java.nio.charset.StandardCharsets;
+
+public class MainActivity extends BridgeActivity {
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(AlbumSyncPlugin.class);
+        super.onCreate(savedInstanceState);
+        try {
+            File hotDir = new File(getFilesDir(), "hot-www");
+            File readyFile = new File(hotDir, ".ready");
+            File idxFile = new File(hotDir, "index.html");
+            if (readyFile.isFile() && idxFile.isFile()) {
+                byte[] buf = new byte[(int) Math.min(readyFile.length(), 256)];
+                try (FileInputStream fis = new FileInputStream(readyFile)) {
+                    int n = fis.read(buf);
+                    String meta = n > 0 ? new String(buf, 0, n, StandardCharsets.UTF_8) : "";
+                    String[] parts = meta.split("\\\\|");
+                    long bundleAppCode = parts.length > 0 ? Long.parseLong(parts[0].trim()) : -1L;
+                    PackageInfo pInfo = getPackageManager().getPackageInfo(getPackageName(), 0);
+                    long curCode = Build.VERSION.SDK_INT >= 28 ? pInfo.getLongVersionCode() : pInfo.versionCode;
+                    if (bundleAppCode == curCode) {
+                        getBridge().setServerBasePath(hotDir.getAbsolutePath());
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
     }
+}
+`;
+    fs.writeFileSync(mainActPath, mainActJava, 'utf8');
   }
 }
 
