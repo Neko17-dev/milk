@@ -864,7 +864,7 @@ function _renderStickerTab(list, itemsToRender) {
         const isSelected = _batchModeActive && _batchSelectedIndices.has(index);
         div.className = `sticker-item${isDisabled ? ' sticker-disabled' : ''}${isSelected ? ' sticker-batch-selected' : ''}`;
         div.innerHTML = `
-            <img src="${item}" loading="lazy">
+            <img src="${item}">
             <div class="sticker-batch-check">✓</div>
             <div class="sticker-delete-btn"><i class="fas fa-times"></i></div>
         `;

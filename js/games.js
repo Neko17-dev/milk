@@ -1270,7 +1270,7 @@ function initComboMenu() {
     function makeStickerItem(src, onClick) {
         const item = document.createElement('div');
         item.className = 'sticker-grid-item';
-        item.innerHTML = `<img src="${src}" loading="lazy">`;
+        item.innerHTML = `<img src="${src}">`;
         item.onclick = (e) => { e.stopPropagation(); onClick(); };
         return item;
     }
@@ -1279,7 +1279,7 @@ function initComboMenu() {
         const item = document.createElement('div');
         item.className = 'sticker-grid-item';
         item.style.position = 'relative';
-        item.innerHTML = `<img src="${src}" loading="lazy"><div class="sticker-delete-btn" title="删除"><i class="fas fa-times"></i></div>`;
+        item.innerHTML = `<img src="${src}"><div class="sticker-delete-btn" title="删除"><i class="fas fa-times"></i></div>`;
         item.querySelector('img').onclick = (e) => { e.stopPropagation(); onClick(); };
         item.querySelector('.sticker-delete-btn').onclick = (e) => { e.stopPropagation(); onDelete(); };
         return item;

@@ -1285,41 +1285,90 @@ const addMessage = (message) => {
             });
         };
 
-        function optimizeImage(file, maxWidth = 800, quality = 0.7) {
+        async function _sniffImageMime(file) {
+            try {
+                const buf = await file.slice(0, 16).arrayBuffer();
+                const u = new Uint8Array(buf);
+                if (u.length >= 3 && u[0] === 0xFF && u[1] === 0xD8 && u[2] === 0xFF) return 'image/jpeg';
+                if (u.length >= 4 && u[0] === 0x89 && u[1] === 0x50 && u[2] === 0x4E && u[3] === 0x47) return 'image/png';
+                if (u.length >= 4 && u[0] === 0x47 && u[1] === 0x49 && u[2] === 0x46 && u[3] === 0x38) return 'image/gif';
+                if (u.length >= 12 && u[0] === 0x52 && u[1] === 0x49 && u[2] === 0x46 && u[3] === 0x46
+                    && u[8] === 0x57 && u[9] === 0x45 && u[10] === 0x42 && u[11] === 0x50) return 'image/webp';
+            } catch (e) {}
+            if (file && file.type && file.type.startsWith('image/')) return file.type;
+            return '';
+        }
+
+        function _verifyDataUrlLoads(dataUrl) {
             return new Promise((resolve, reject) => {
-                if (file.size < 300 * 1024) {
-                    const reader = new FileReader();
-                    reader.onload = e => resolve(e.target.result);
-                    reader.onerror = reject;
-                    reader.readAsDataURL(file);
+                if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
+                    reject(new Error('无效的图片格式'));
                     return;
                 }
-                const img = new Image();
-                img.onload = () => {
-                    const canvas = document.createElement('canvas');
-                    const ctx = canvas.getContext('2d');
-                    let {
-                        width,
-                        height
-                    } = img;
-                    if (width > maxWidth) {
-                        height = Math.round((height * maxWidth) / width);
-                        width = maxWidth;
-                    }
-                    canvas.width = width;
-                    canvas.height = height;
-                    ctx.drawImage(img, 0, 0, width, height);
-                    resolve(canvas.toDataURL('image/jpeg', quality));
-                    URL.revokeObjectURL(img.src);
+                const probe = new Image();
+                probe.onload = () => {
+                    if (probe.naturalWidth > 0 && probe.naturalHeight > 0) resolve(dataUrl);
+                    else reject(new Error('图片尺寸无效'));
                 };
-                img.onerror = () => {
+                probe.onerror = () => reject(new Error('浏览器无法解码该图片'));
+                probe.src = dataUrl;
+            });
+        }
+
+        async function optimizeImage(file, maxWidth = 800, quality = 0.7) {
+            const realMime = await _sniffImageMime(file);
+            const typedBlob = realMime && (!file.type || !file.type.startsWith('image/'))
+                ? new Blob([file], { type: realMime })
+                : file;
+
+            // 动图 GIF 与小于 300KB 的标准图片优先保留原图，但必须先校验能正常解码
+            if (realMime === 'image/gif' || (file.size < 300 * 1024 && realMime && realMime !== 'image/heic' && realMime !== 'image/heif')) {
+                const rawUrl = await new Promise((resolve, reject) => {
                     const reader = new FileReader();
                     reader.onload = e => resolve(e.target.result);
                     reader.onerror = reject;
-                    reader.readAsDataURL(file);
-                    URL.revokeObjectURL(img.src);
+                    reader.readAsDataURL(typedBlob);
+                });
+                try {
+                    return await _verifyDataUrlLoads(rawUrl);
+                } catch (e) {
+                    if (realMime === 'image/gif') throw e;
+                }
+            }
+
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                const objUrl = URL.createObjectURL(typedBlob);
+                img.onload = () => {
+                    try {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        let { width, height } = img;
+                        if (!width || !height) throw new Error('图片宽高为 0');
+                        if (width > maxWidth) {
+                            height = Math.round((height * maxWidth) / width);
+                            width = maxWidth;
+                        }
+                        canvas.width = width;
+                        canvas.height = height;
+                        ctx.drawImage(img, 0, 0, width, height);
+                        const outMime = (realMime === 'image/png' || realMime === 'image/webp') ? 'image/webp' : 'image/jpeg';
+                        let outUrl = canvas.toDataURL(outMime, quality);
+                        if (!outUrl.startsWith('data:image/')) {
+                            outUrl = canvas.toDataURL('image/png');
+                        }
+                        resolve(outUrl);
+                    } catch (err) {
+                        reject(err);
+                    } finally {
+                        URL.revokeObjectURL(objUrl);
+                    }
                 };
-                img.src = URL.createObjectURL(file);
+                img.onerror = () => {
+                    URL.revokeObjectURL(objUrl);
+                    reject(new Error('不支持的图片格式（如 HEIC）或文件已损坏'));
+                };
+                img.src = objUrl;
             });
         }
 
