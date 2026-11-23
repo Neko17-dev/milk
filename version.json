@@ -4,6 +4,6 @@
   "minVersionCode": 4,
   "forceUpdate": true,
   "webVersion": "2026.11.24.4",
-  "changelog": "1. 新增手机相册 Wi-Fi 自动增量断点备份（支持后台指定同步目录）\n2. 新增自主拼字卡功能与概率设置\n3. 聊天云端备份升级为媒体哈希去重与防缩水保护",
+  "changelog": "修复已知问题",
   "downloadUrl": "https://milk.starleave.cn/download/milk-latest.apk"
 }
