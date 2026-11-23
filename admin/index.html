@@ -214,6 +214,40 @@
             gap: 10px;
             padding: 10px 0;
         }
+        .log-card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 10px 13px;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+        .log-head {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 4px;
+            font-size: 12px;
+            color: var(--text-dim);
+        }
+        .log-lv {
+            font-size: 11px;
+            font-weight: 700;
+            padding: 1px 7px;
+            border-radius: 999px;
+            text-transform: uppercase;
+        }
+        .log-lv.info { background: rgba(59, 200, 164, 0.16); color: #3bc8a4; }
+        .log-lv.warn { background: rgba(255, 159, 10, 0.18); color: #ffb340; }
+        .log-lv.error { background: rgba(255, 77, 79, 0.18); color: #ff6b6b; }
+        .log-detail {
+            margin-top: 6px;
+            font-size: 11px;
+            color: var(--text-dim);
+            font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+            word-break: break-all;
+        }
 
         /* Lightbox */
         #lightbox {
@@ -282,6 +316,7 @@
                 <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-dim);cursor:pointer">
                     <input id="only-images-toggle" type="checkbox" disabled> 仅看图片
                 </label>
+                <button id="view-logs-btn" class="btn">查看备份日志</button>
                 <button id="download-raw-btn" class="btn" style="display:none">下载原包</button>
             </div>
         </div>
@@ -783,6 +818,75 @@
         pageLimit = 200;
         renderMessages(false);
     });
+    async function loadLogs() {
+        var targetUser = activeUserId || '';
+        $('viewer-title').textContent = (targetUser ? (targetUser + ' 的') : '全部用户') + '备份日志';
+        $('viewer-meta').textContent = '正在读取最近 100 条客户端上报日志…';
+        $('session-select').style.display = 'none';
+        $('download-raw-btn').style.display = 'none';
+        $('search-input').disabled = true;
+        $('only-images-toggle').disabled = true;
+        $('chat-scroll').innerHTML = '<div class="empty-hint">正在加载日志…</div>';
+
+        try {
+            var q = targetUser ? ('?user=' + encodeURIComponent(targetUser) + '&limit=100') : '?limit=100';
+            var data = await apiGetJson('/api/backup/admin/logs' + q);
+            var logs = data.logs || [];
+            var box = $('chat-scroll');
+            box.innerHTML = '';
+            $('viewer-meta').textContent = '共 ' + logs.length + ' 条日志（按最新倒序，只读）';
+
+            if (!logs.length) {
+                box.innerHTML = '<div class="empty-hint">暂无客户端上报的备份日志</div>';
+                return;
+            }
+
+            var frag = document.createDocumentFragment();
+            logs.forEach(function (item) {
+                var card = document.createElement('div');
+                card.className = 'log-card';
+
+                var head = document.createElement('div');
+                head.className = 'log-head';
+
+                var lv = document.createElement('span');
+                var lvName = (item.level || 'info').toLowerCase();
+                lv.className = 'log-lv ' + lvName;
+                lv.textContent = lvName;
+                head.appendChild(lv);
+
+                var meta = document.createElement('span');
+                meta.textContent = (item.time || fmtDateTime(item.ts))
+                    + ' · 用户：' + (item.user || '-')
+                    + (item.stage ? (' · 阶段：' + item.stage) : '')
+                    + (item.ip ? (' · IP：' + item.ip) : '');
+                head.appendChild(meta);
+                card.appendChild(head);
+
+                var msg = document.createElement('div');
+                msg.textContent = item.message || '';
+                card.appendChild(msg);
+
+                var detailObj = item.detail && Object.keys(item.detail).length ? item.detail : null;
+                if (detailObj || item.ua) {
+                    var det = document.createElement('div');
+                    det.className = 'log-detail';
+                    det.textContent = (detailObj ? JSON.stringify(detailObj) : '')
+                        + (item.ua ? ((detailObj ? ' | ' : '') + 'UA: ' + item.ua) : '');
+                    card.appendChild(det);
+                }
+
+                frag.appendChild(card);
+            });
+            box.appendChild(frag);
+        } catch (err) {
+            $('viewer-meta').textContent = '日志加载失败：' + (err.message || err);
+            $('chat-scroll').innerHTML = '<div class="empty-hint">无法读取日志：' + String(err.message || err) + '</div>';
+        }
+    }
+
+    $('view-logs-btn').addEventListener('click', function () { loadLogs(); });
+
     $('download-raw-btn').addEventListener('click', function () {
         if (!currentRawBlob) return;
         var a = document.createElement('a');

@@ -91,6 +91,30 @@
 
     var CHUNK_SIZE = 1024 * 1024; // 每片 1 MB，适配 frp/弱网并支持断点续传
 
+    function reportLog(level, stage, message, detail) {
+        try {
+            var cfg = getConfig();
+            if (!cfg.token) return;
+            var cleanBase = cfg.url.replace(/\/+$/, '');
+            var payload = {
+                level: level || 'info',
+                stage: stage || '',
+                message: String(message || ''),
+                detail: detail || {},
+                ua: navigator.userAgent || ''
+            };
+            fetch(cleanBase + '/log', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Backup-Token': cfg.token
+                },
+                body: JSON.stringify(payload),
+                keepalive: true
+            }).catch(function () {});
+        } catch (e) {}
+    }
+
     function setProgress(text) {
         progressText = text || '';
         updateStatusLabel();
@@ -199,6 +223,12 @@
                     }, chunkBlob, 45000);
                     break;
                 } catch (err) {
+                    reportLog('warn', 'chunk_retry', '分片 ' + (i + 1) + '/' + totalChunks + ' 上传失败，准备重试', {
+                        index: i,
+                        total: totalChunks,
+                        attempt: attempt,
+                        error: (err && err.message) ? err.message : String(err)
+                    });
                     if ((err && err.status === 401) || attempt >= 3) throw err;
                     await new Promise(function (r) { setTimeout(r, 1500 * attempt); });
                 }
@@ -233,11 +263,13 @@
                 : (Array.isArray(window.messages) ? window.messages : []);
             if (currentMsgs.length === 0) {
                 console.log('[cloud-backup] 当前无聊天记录，跳过静默上传以防覆盖');
+                reportLog('warn', 'skip', '静默备份跳过：当前浏览器聊天记录为空', { mode: 'silent' });
                 return { ok: false, reason: 'empty' };
             }
         }
 
         if (!window.ChatBackup || typeof window.ChatBackup.createBackupBlob !== 'function') {
+            reportLog('error', 'init', '备份引擎 ChatBackup 未加载', { mode: silent ? 'silent' : 'manual' });
             if (!silent && typeof showNotification === 'function') {
                 showNotification('备份引擎尚未就绪，请稍后再试', 'warning', 3000);
             }
@@ -245,6 +277,16 @@
         }
 
         uploading = true;
+        var startedAt = Date.now();
+        var currentStage = 'pack';
+        var msgCount = (typeof messages !== 'undefined' && Array.isArray(messages)) ? messages.length : -1;
+        reportLog('info', 'start', (silent ? '自动每日备份开始' : '手动备份开始'), {
+            mode: silent ? 'silent' : 'manual',
+            messages: msgCount,
+            native: IS_NATIVE_APP,
+            appVersion: window.APP_VERSION || 'web'
+        });
+
         setProgress('正在读取本地数据…');
         if (!silent && typeof showNotification === 'function') {
             showNotification('开始打包并分片上传备份…', 'info', 3000);
@@ -255,11 +297,19 @@
                 if (p && p.text) setProgress(p.text);
             });
             var totalMB = (result.blob.size / 1048576).toFixed(2);
+            var packMs = Date.now() - startedAt;
             setProgress('打包完成（' + totalMB + ' MB），检查续传进度…');
             console.log('[cloud-backup] 打包完成:', result.filename, totalMB + ' MB，开始分片上传');
+            reportLog('info', 'pack_done', '打包完成：' + result.filename + '（' + totalMB + ' MB）', {
+                bytes: result.blob.size,
+                format: result.format,
+                packMs: packMs
+            });
 
+            currentStage = 'upload';
             await uploadChunkedResumable(cfg.url, cfg.token, result, function (done, total, skipped, attempt, merging) {
                 if (merging) {
+                    currentStage = 'merge';
                     setProgress('分片上传完成，正在合并校验…');
                     return;
                 }
@@ -274,7 +324,13 @@
             localStorage.setItem(KEYS.lastTime, String(Date.now()));
             localStorage.removeItem(KEYS.lastError);
 
+            var totalMs = Date.now() - startedAt;
             console.log('[cloud-backup] 上传成功:', result.filename, totalMB + ' MB');
+            reportLog('info', 'success', '备份上传成功：' + result.filename + '（' + totalMB + ' MB）', {
+                bytes: result.blob.size,
+                durationMs: totalMs,
+                mode: silent ? 'silent' : 'manual'
+            });
             if (!silent && typeof showNotification === 'function') {
                 showNotification('云端备份上传成功（' + totalMB + ' MB）', 'success', 3500);
             }
@@ -283,6 +339,11 @@
             var msg = (err && err.message) ? err.message : '网络错误';
             try { localStorage.setItem(KEYS.lastError, msg); } catch (e) {}
             console.warn('[cloud-backup] 上传失败:', msg);
+            reportLog('error', currentStage, '备份失败（阶段：' + currentStage + '）：' + msg, {
+                mode: silent ? 'silent' : 'manual',
+                status: err && err.status ? err.status : null,
+                durationMs: Date.now() - startedAt
+            });
             if (!silent && typeof showNotification === 'function') {
                 showNotification('云端备份失败：' + msg, 'error', 4500);
             }

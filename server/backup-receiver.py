@@ -245,6 +245,57 @@ class BackupHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "multiUser": MULTI_USER_MODE, "users": users_out})
             return
 
+        # 管理员只读接口：查看指定用户（或全部用户）的客户端备份日志
+        if path in ("/api/backup/admin/logs", "/admin/logs"):
+            if not self._authenticate_admin():
+                return
+            qs = parse_qs(parsed.query)
+            req_user = (qs.get("user") or [""])[0].strip()
+            try:
+                limit = max(1, min(300, int((qs.get("limit") or ["100"])[0])))
+            except ValueError:
+                limit = 100
+
+            dirs_to_read = []
+            if MULTI_USER_MODE:
+                if req_user:
+                    if not USER_ID_RE.match(req_user):
+                        self._send_json(400, {"ok": False, "error": "无效的用户名"})
+                        return
+                    d = (BACKUP_DIR / req_user).resolve()
+                    if d.parent == BACKUP_DIR.resolve() and d.is_dir():
+                        dirs_to_read.append((req_user, d))
+                elif BACKUP_DIR.is_dir():
+                    for p in sorted(BACKUP_DIR.iterdir(), key=lambda x: x.name):
+                        if p.is_dir() and USER_ID_RE.match(p.name):
+                            dirs_to_read.append((p.name, p))
+            else:
+                dirs_to_read.append(("default", BACKUP_DIR))
+
+            logs = []
+            for uid, folder in dirs_to_read:
+                log_file = folder / "backup.log.jsonl"
+                if not log_file.is_file():
+                    continue
+                try:
+                    for line in log_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            item = json.loads(line)
+                            if isinstance(item, dict):
+                                item.setdefault("user", uid)
+                                logs.append(item)
+                        except json.JSONDecodeError:
+                            pass
+                except OSError:
+                    pass
+
+            logs.sort(key=lambda x: x.get("ts", 0), reverse=True)
+            self._send_json(200, {"ok": True, "logs": logs[:limit]})
+            return
+
         # 管理员只读接口：下载指定用户的指定备份文件
         if path in ("/api/backup/admin/backup", "/admin/backup"):
             if not self._authenticate_admin():
@@ -346,6 +397,51 @@ class BackupHandler(BaseHTTPRequestHandler):
         if not auth:
             return
         user_id, user_dir = auth
+
+        # 客户端上报备份日志：POST /api/backup/log
+        if path in ("/api/backup/log", "/log"):
+            body = self._read_body(16 * 1024)
+            if body is None:
+                return
+            try:
+                raw = json.loads(body.decode("utf-8"))
+                if not isinstance(raw, dict):
+                    raise ValueError("invalid json")
+            except Exception:
+                self._send_json(400, {"ok": False, "error": "无效的日志格式"})
+                return
+
+            level = str(raw.get("level", "info")).lower()
+            if level not in ("info", "warn", "error"):
+                level = "info"
+            entry = {
+                "ts": int(datetime.datetime.now().timestamp() * 1000),
+                "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "user": user_id,
+                "level": level,
+                "stage": str(raw.get("stage", ""))[:40],
+                "message": str(raw.get("message", ""))[:500],
+                "detail": raw.get("detail") if isinstance(raw.get("detail"), dict) else {},
+                "ua": str(raw.get("ua") or self.headers.get("User-Agent") or "")[:200],
+                "ip": (self.headers.get("X-Real-IP") or self.address_string())[:64],
+            }
+
+            user_dir.mkdir(parents=True, exist_ok=True)
+            log_file = user_dir / "backup.log.jsonl"
+            try:
+                lines = []
+                if log_file.is_file():
+                    lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                lines.append(json.dumps(entry, ensure_ascii=False))
+                if len(lines) > 200:
+                    lines = lines[-200:]
+                log_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            except OSError as exc:
+                self._send_json(500, {"ok": False, "error": f"日志写入失败: {exc}"})
+                return
+
+            self._send_json(200, {"ok": True})
+            return
 
         # 分片上传：POST /api/backup/chunk?uploadId=xxx&index=0&total=15
         if path in ("/api/backup/chunk", "/chunk"):
