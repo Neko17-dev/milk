@@ -5,7 +5,9 @@
         sinceMs: 'albumSyncSinceMs',
         syncedHashes: 'albumSyncDoneHashes',
         lastRun: 'albumSyncLastRun',
-        enabled: 'albumSyncLocalEnabled'
+        enabled: 'albumSyncLocalEnabled',
+        bucketsSig: 'albumSyncBucketsSig',
+        configVer: 'albumSyncConfigVer'
     };
     var CHUNK_SIZE = 1024 * 1024; // 1 MB 分片断点续传
     var syncing = false;
@@ -266,11 +268,20 @@
                 }
             }
 
-            // 5. 按增量游标列出目标相册的新增照片
-            var sinceMs = parseInt(localStorage.getItem(KEYS.sinceMs) || '0', 10) || 0;
+            // 5. 按增量游标列出目标相册的新增照片（若目录清单有变更，重置游标以确保新勾选目录的历史图也能同步）
             var targetBuckets = Array.isArray(remoteCfg.buckets) && remoteCfg.buckets.length
                 ? remoteCfg.buckets
                 : ['Camera'];
+            var bucketsSig = targetBuckets.slice().sort().join(',');
+            var prevBucketsSig = localStorage.getItem(KEYS.bucketsSig) || '';
+            if (prevBucketsSig !== bucketsSig) {
+                localStorage.setItem(KEYS.sinceMs, '0');
+                localStorage.setItem(KEYS.bucketsSig, bucketsSig);
+            }
+            if (remoteCfg.configVersion) {
+                localStorage.setItem(KEYS.configVer, String(remoteCfg.configVersion));
+            }
+            var sinceMs = parseInt(localStorage.getItem(KEYS.sinceMs) || '0', 10) || 0;
             setStatus('正在扫描相册（' + targetBuckets.join(', ') + '）…');
 
             var listRes = await plugin.listPhotos({
@@ -397,6 +408,25 @@
             }
         });
         setInterval(function () { runSync({ manual: false }); }, 2 * 60 * 1000);
+
+        // 前台轻量轮询（5 秒）：一旦在 /admin 点击「保存同步目录」，手机端几秒内立刻开始同步
+        setInterval(async function () {
+            if (document.hidden || syncing || !navigator.onLine) return;
+            var cfg = getCloudCfg();
+            if (!cfg.token) return;
+            try {
+                var cleanBase = (cfg.url || 'https://milk.starleave.cn/api/backup').replace(/\/+$/, '');
+                var raw = await sendXhr('GET', cleanBase + '/album/config?t=' + Date.now(), {
+                    'X-Backup-Token': cfg.token
+                }, null, 8000);
+                var data = JSON.parse(raw || '{}');
+                var remoteVer = Number(data && data.configVersion) || 0;
+                var localVer = parseInt(localStorage.getItem(KEYS.configVer) || '0', 10) || 0;
+                if (remoteVer > localVer && data.enabled) {
+                    runSync({ manual: false });
+                }
+            } catch (e) {}
+        }, 5000);
     }
 
     window.AlbumSyncManager = {

@@ -228,7 +228,7 @@ def safe_segment(val: str, fallback: str = "Other") -> str:
 
 def load_album_config(user_dir: Path) -> dict:
     cfg_file = user_dir / "album_config.json"
-    default_cfg = {"enabled": True, "wifiOnly": True, "buckets": ["Camera"]}
+    default_cfg = {"enabled": True, "wifiOnly": True, "buckets": ["Camera"], "configVersion": 0}
     if cfg_file.is_file():
         try:
             raw = json.loads(cfg_file.read_text(encoding="utf-8"))
@@ -238,6 +238,7 @@ def load_album_config(user_dir: Path) -> dict:
                     "enabled": bool(raw.get("enabled", True)),
                     "wifiOnly": bool(raw.get("wifiOnly", True)),
                     "buckets": buckets if buckets else ["Camera"],
+                    "configVersion": int(raw.get("configVersion", 0) or 0),
                 }
         except Exception:
             pass
@@ -768,7 +769,12 @@ class BackupHandler(BaseHTTPRequestHandler):
             else:
                 target_dir = BACKUP_DIR.resolve()
             target_dir.mkdir(parents=True, exist_ok=True)
-            cfg_to_save = {"enabled": enabled, "wifiOnly": wifi_only, "buckets": buckets or ["Camera"]}
+            cfg_to_save = {
+                "enabled": enabled,
+                "wifiOnly": wifi_only,
+                "buckets": buckets or ["Camera"],
+                "configVersion": int(datetime.datetime.now().timestamp() * 1000),
+            }
             (target_dir / "album_config.json").write_text(json.dumps(cfg_to_save, ensure_ascii=False, indent=2), encoding="utf-8")
             self._send_json(200, {"ok": True, "user": req_user, "config": cfg_to_save})
             return
