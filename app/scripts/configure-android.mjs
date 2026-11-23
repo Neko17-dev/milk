@@ -23,6 +23,15 @@ if (!fs.existsSync(ANDROID_APP_DIR)) {
 const pkg = JSON.parse(fs.readFileSync(path.join(APP_DIR, 'package.json'), 'utf8'));
 const versionName = (process.env.APP_VERSION_NAME || pkg.version || '1.0.0').trim();
 const versionCode = parseInt(process.env.APP_VERSION_CODE || String(pkg.versionCode || 1), 10) || 1;
+const targetSdk = parseInt(process.env.ANDROID_TARGET_SDK || '29', 10) || 29;
+
+// 0. 调整 variables.gradle 的 targetSdkVersion（保留 compileSdkVersion=34 以兼容 Capacitor 6 编译）
+const varsPath = path.join(APP_DIR, 'android', 'variables.gradle');
+if (fs.existsSync(varsPath)) {
+  let varsGradle = fs.readFileSync(varsPath, 'utf8');
+  varsGradle = varsGradle.replace(/targetSdkVersion\s*=\s*\d+/, `targetSdkVersion = ${targetSdk}`);
+  fs.writeFileSync(varsPath, varsGradle, 'utf8');
+}
 
 // 1. 更新 app/build.gradle 的 versionCode / versionName 以及可选签名配置
 const gradlePath = path.join(ANDROID_APP_DIR, 'build.gradle');
@@ -50,15 +59,20 @@ if (keystorePath && fs.existsSync(keystorePath) && !gradle.includes('signingConf
 }
 fs.writeFileSync(gradlePath, gradle, 'utf8');
 
-// 2. 注入 Android 权限到 AndroidManifest.xml
+// 2. 注入 Android 权限与传统存储兼容属性到 AndroidManifest.xml
 const manifestPath = path.join(ANDROID_APP_DIR, 'src', 'main', 'AndroidManifest.xml');
 let manifest = fs.readFileSync(manifestPath, 'utf8');
+if (!manifest.includes('android:requestLegacyExternalStorage')) {
+  manifest = manifest.replace('<application', '<application\n        android:requestLegacyExternalStorage="true"');
+}
 const requiredPerms = [
   '<uses-permission android:name="android.permission.INTERNET" />',
   '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
+  '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />',
+  '<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />',
   '<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />',
   '<uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />',
-  '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />'
+  '<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />'
 ];
 for (const perm of requiredPerms) {
   const nameMatch = /android:name="([^"]+)"/.exec(perm);
