@@ -198,6 +198,7 @@ const stickerInput = document.getElementById('sticker-file-input');
 
                     let successCount = 0;
                     let failCount = 0;
+                    let lastErrMsg = '';
 
                     for (const file of validFiles) {
                         try {
@@ -207,6 +208,7 @@ const stickerInput = document.getElementById('sticker-file-input');
                         } catch (err) {
                             console.error(err);
                             failCount++;
+                            lastErrMsg = (err && err.message) ? err.message : '';
                         }
                     }
 
@@ -214,7 +216,7 @@ const stickerInput = document.getElementById('sticker-file-input');
                     renderReplyLibrary();
 
                     if (failCount > 0) {
-                        showNotification('上传完成：' + successCount + ' 张成功，' + failCount + ' 张失败', 'warning');
+                        showNotification('上传完成：' + successCount + ' 张成功，' + failCount + ' 张失败' + (lastErrMsg ? '（' + lastErrMsg + '）' : ''), 'warning', 4500);
                     } else {
                         showNotification('上传成功，共 ' + successCount + ' 张', 'success');
                     }

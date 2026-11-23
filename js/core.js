@@ -1287,31 +1287,42 @@ const addMessage = (message) => {
 
         async function _sniffImageMime(file) {
             try {
-                const buf = await file.slice(0, 16).arrayBuffer();
+                const buf = await file.slice(0, 32).arrayBuffer();
                 const u = new Uint8Array(buf);
                 if (u.length >= 3 && u[0] === 0xFF && u[1] === 0xD8 && u[2] === 0xFF) return 'image/jpeg';
                 if (u.length >= 4 && u[0] === 0x89 && u[1] === 0x50 && u[2] === 0x4E && u[3] === 0x47) return 'image/png';
                 if (u.length >= 4 && u[0] === 0x47 && u[1] === 0x49 && u[2] === 0x46 && u[3] === 0x38) return 'image/gif';
+                if (u.length >= 2 && u[0] === 0x42 && u[1] === 0x4D) return 'image/bmp';
                 if (u.length >= 12 && u[0] === 0x52 && u[1] === 0x49 && u[2] === 0x46 && u[3] === 0x46
                     && u[8] === 0x57 && u[9] === 0x45 && u[10] === 0x42 && u[11] === 0x50) return 'image/webp';
+                if (u.length >= 12 && u[4] === 0x66 && u[5] === 0x74 && u[6] === 0x79 && u[7] === 0x70) {
+                    const brand = String.fromCharCode(u[8], u[9], u[10], u[11]).toLowerCase();
+                    if (brand === 'avif' || brand === 'avis') return 'image/avif';
+                    if (brand === 'heic' || brand === 'heix' || brand === 'hevc' || brand === 'mif1' || brand === 'msf1') return 'image/heic';
+                }
             } catch (e) {}
             if (file && file.type && file.type.startsWith('image/')) return file.type;
             return '';
         }
 
-        function _verifyDataUrlLoads(dataUrl) {
+        function _readBlobAsDataUrl(blob) {
             return new Promise((resolve, reject) => {
-                if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
-                    reject(new Error('无效的图片格式'));
-                    return;
-                }
-                const probe = new Image();
-                probe.onload = () => {
-                    if (probe.naturalWidth > 0 && probe.naturalHeight > 0) resolve(dataUrl);
-                    else reject(new Error('图片尺寸无效'));
+                const reader = new FileReader();
+                reader.onload = e => resolve(e.target.result);
+                reader.onerror = () => reject(new Error('读取文件失败'));
+                reader.readAsDataURL(blob);
+            });
+        }
+
+        function _loadImageElement(src) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.onload = () => {
+                    if (img.naturalWidth > 0 && img.naturalHeight > 0) resolve(img);
+                    else reject(new Error('图片宽高为 0'));
                 };
-                probe.onerror = () => reject(new Error('浏览器无法解码该图片'));
-                probe.src = dataUrl;
+                img.onerror = () => reject(new Error('图片解码失败'));
+                img.src = src;
             });
         }
 
@@ -1321,55 +1332,53 @@ const addMessage = (message) => {
                 ? new Blob([file], { type: realMime })
                 : file;
 
-            // 动图 GIF 与小于 300KB 的标准图片优先保留原图，但必须先校验能正常解码
+            // 动图 GIF 与小于 300KB 的常规图片优先保留原图，并校验浏览器可正常解码
             if (realMime === 'image/gif' || (file.size < 300 * 1024 && realMime && realMime !== 'image/heic' && realMime !== 'image/heif')) {
-                const rawUrl = await new Promise((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onload = e => resolve(e.target.result);
-                    reader.onerror = reject;
-                    reader.readAsDataURL(typedBlob);
-                });
+                const rawUrl = await _readBlobAsDataUrl(typedBlob);
                 try {
-                    return await _verifyDataUrlLoads(rawUrl);
+                    await _loadImageElement(rawUrl);
+                    return rawUrl;
                 } catch (e) {
                     if (realMime === 'image/gif') throw e;
                 }
             }
 
-            return new Promise((resolve, reject) => {
-                const img = new Image();
-                const objUrl = URL.createObjectURL(typedBlob);
-                img.onload = () => {
-                    try {
-                        const canvas = document.createElement('canvas');
-                        const ctx = canvas.getContext('2d');
-                        let { width, height } = img;
-                        if (!width || !height) throw new Error('图片宽高为 0');
-                        if (width > maxWidth) {
-                            height = Math.round((height * maxWidth) / width);
-                            width = maxWidth;
-                        }
-                        canvas.width = width;
-                        canvas.height = height;
-                        ctx.drawImage(img, 0, 0, width, height);
-                        const outMime = (realMime === 'image/png' || realMime === 'image/webp') ? 'image/webp' : 'image/jpeg';
-                        let outUrl = canvas.toDataURL(outMime, quality);
-                        if (!outUrl.startsWith('data:image/')) {
-                            outUrl = canvas.toDataURL('image/png');
-                        }
-                        resolve(outUrl);
-                    } catch (err) {
-                        reject(err);
-                    } finally {
-                        URL.revokeObjectURL(objUrl);
+            let img = null;
+            const objUrl = URL.createObjectURL(typedBlob);
+            try {
+                img = await _loadImageElement(objUrl);
+            } catch (blobErr) {
+                // 部分安卓 WebView 对 content:// 生成的 blob: URL 兼容性较差，回退用 DataURL 解码
+                try {
+                    const fallbackDataUrl = await _readBlobAsDataUrl(typedBlob);
+                    img = await _loadImageElement(fallbackDataUrl);
+                } catch (dataErr) {
+                    if (realMime === 'image/heic' || realMime === 'image/heif') {
+                        throw new Error('不支持 HEIC/HEIF 格式，请截图或转为 JPG/PNG');
                     }
-                };
-                img.onerror = () => {
-                    URL.revokeObjectURL(objUrl);
-                    reject(new Error('不支持的图片格式（如 HEIC）或文件已损坏'));
-                };
-                img.src = objUrl;
-            });
+                    throw new Error('无法解码图片（' + (realMime || file.type || '未知格式') + '）');
+                }
+            } finally {
+                URL.revokeObjectURL(objUrl);
+            }
+
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            let width = img.naturalWidth || img.width;
+            let height = img.naturalHeight || img.height;
+            if (width > maxWidth) {
+                height = Math.round((height * maxWidth) / width);
+                width = maxWidth;
+            }
+            canvas.width = width;
+            canvas.height = height;
+            ctx.drawImage(img, 0, 0, width, height);
+            const outMime = (realMime === 'image/png' || realMime === 'image/webp') ? 'image/webp' : 'image/jpeg';
+            let outUrl = canvas.toDataURL(outMime, quality);
+            if (!outUrl.startsWith('data:image/')) {
+                outUrl = canvas.toDataURL('image/png');
+            }
+            return outUrl;
         }
 
         window.updateReplyPreview = function() {
