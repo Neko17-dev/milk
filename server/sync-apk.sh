@@ -15,7 +15,18 @@ if [ -n "${GITHUB_TOKEN:-}" ]; then
     AUTH_HEADER=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
 fi
 
-RELEASE_JSON=$(curl -fsSL -H "Accept: application/vnd.github+json" "${AUTH_HEADER[@]}" "${API_URL}")
+HTTP_CODE=$(curl -sS -o /tmp/milk-release.json -w "%{http_code}" -H "Accept: application/vnd.github+json" "${AUTH_HEADER[@]}" "${API_URL}")
+if [ "${HTTP_CODE}" = "404" ]; then
+    rm -f /tmp/milk-release.json
+    echo "[sync-apk] 尚无 latest Release（请先在 GitHub Actions 运行一次 Build Android APK）"
+    exit 0
+elif [ "${HTTP_CODE}" != "200" ]; then
+    rm -f /tmp/milk-release.json
+    echo "[sync-apk] 请求 GitHub API 失败（HTTP ${HTTP_CODE}）"
+    exit 1
+fi
+RELEASE_JSON=$(cat /tmp/milk-release.json)
+rm -f /tmp/milk-release.json
 
 ASSET_INFO=$(python3 -c '
 import json, sys
