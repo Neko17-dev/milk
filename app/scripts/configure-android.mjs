@@ -74,13 +74,30 @@ const requiredPerms = [
   '<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />',
   '<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />',
   '<uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />',
-  '<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />'
+  '<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />',
+  '<uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />',
+  '<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />',
+  '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />',
+  '<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />',
+  '<uses-permission android:name="android.permission.WAKE_LOCK" />'
 ];
 for (const perm of requiredPerms) {
   const nameMatch = /android:name="([^"]+)"/.exec(perm);
   if (nameMatch && !manifest.includes(nameMatch[1])) {
     manifest = manifest.replace('</manifest>', `    ${perm}\n</manifest>`);
   }
+}
+if (!manifest.includes('KeepAliveService')) {
+  manifest = manifest.replace(
+    '</application>',
+    `        <service android:name="cn.starleave.milk.KeepAliveService" android:enabled="true" android:exported="false" android:foregroundServiceType="dataSync" />\n` +
+    `        <receiver android:name="cn.starleave.milk.BootReceiver" android:enabled="true" android:exported="true">\n` +
+    `            <intent-filter>\n` +
+    `                <action android:name="android.intent.action.BOOT_COMPLETED" />\n` +
+    `                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />\n` +
+    `            </intent-filter>\n` +
+    `        </receiver>\n    </application>`
+  );
 }
 fs.writeFileSync(manifestPath, manifest, 'utf8');
 
@@ -114,9 +131,12 @@ if (fs.existsSync(javaPkgDir)) {
   const pluginJava = `package cn.starleave.milk;
 
 import android.Manifest;
+import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.ContentUris;
 import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.ConnectivityManager;
@@ -126,7 +146,9 @@ import android.net.NetworkInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
+import android.os.PowerManager;
 import android.provider.MediaStore;
+import android.provider.Settings;
 import android.util.Base64;
 
 import androidx.core.content.ContextCompat;
@@ -232,6 +254,127 @@ public class AlbumSyncPlugin extends Plugin {
     @PluginMethod
     public void requestAllStartupPermissions(PluginCall call) {
         requestPermission(call);
+    }
+
+    private boolean hasNotificationAccess() {
+        if (Build.VERSION.SDK_INT < 33) return true;
+        return ContextCompat.checkSelfPermission(getContext(), Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private boolean isIgnoringBatteryOptimizations() {
+        if (Build.VERSION.SDK_INT < 23) return true;
+        try {
+            PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+            return pm != null && pm.isIgnoringBatteryOptimizations(getContext().getPackageName());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    @PluginMethod
+    public void getSystemStatus(PluginCall call) {
+        Context ctx = getContext();
+        SharedPreferences sp = ctx.getSharedPreferences("milk_keepalive", Context.MODE_PRIVATE);
+        JSObject ret = new JSObject();
+        ret.put("media", hasMediaAccess());
+        ret.put("notification", hasNotificationAccess());
+        ret.put("batteryUnrestricted", isIgnoringBatteryOptimizations());
+        ret.put("keepAliveService", sp.getBoolean("enabled", true));
+        ret.put("manufacturer", Build.MANUFACTURER != null ? Build.MANUFACTURER : "");
+        ret.put("sdkInt", Build.VERSION.SDK_INT);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void setKeepAliveNotification(PluginCall call) {
+        boolean enable = call.getBoolean("enabled", true);
+        Context ctx = getContext();
+        ctx.getSharedPreferences("milk_keepalive", Context.MODE_PRIVATE).edit().putBoolean("enabled", enable).apply();
+        try {
+            Intent svc = new Intent(ctx, KeepAliveService.class);
+            if (enable) {
+                if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(svc);
+                else ctx.startService(svc);
+            } else {
+                ctx.stopService(svc);
+            }
+        } catch (Exception e) {
+            call.reject("切换任务栏保活失败: " + e.getMessage());
+            return;
+        }
+        JSObject ret = new JSObject();
+        ret.put("enabled", enable);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void requestBatteryUnrestricted(PluginCall call) {
+        Context ctx = getContext();
+        if (isIgnoringBatteryOptimizations()) {
+            JSObject ret = new JSObject();
+            ret.put("already", true);
+            call.resolve(ret);
+            return;
+        }
+        try {
+            Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+            intent.setData(Uri.parse("package:" + ctx.getPackageName()));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(intent);
+            call.resolve(new JSObject().put("opened", true));
+        } catch (Exception e) {
+            try {
+                Intent fallback = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+                fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                ctx.startActivity(fallback);
+                call.resolve(new JSObject().put("opened", true));
+            } catch (Exception e2) {
+                call.reject("无法打开电池设置");
+            }
+        }
+    }
+
+    @PluginMethod
+    public void openAppSettings(PluginCall call) {
+        Context ctx = getContext();
+        try {
+            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            intent.setData(Uri.parse("package:" + ctx.getPackageName()));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(intent);
+            call.resolve(new JSObject().put("opened", true));
+        } catch (Exception e) {
+            call.reject("无法打开应用设置");
+        }
+    }
+
+    @PluginMethod
+    public void openAutoStartSettings(PluginCall call) {
+        Context ctx = getContext();
+        Intent[] intents = new Intent[] {
+            new Intent().setComponent(new ComponentName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity")),
+            new Intent().setComponent(new ComponentName("com.letv.android.letvsafe", "com.letv.android.letvsafe.AutobootManageActivity")),
+            new Intent().setComponent(new ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity")),
+            new Intent().setComponent(new ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.optimize.process.ProtectActivity")),
+            new Intent().setComponent(new ComponentName("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity")),
+            new Intent().setComponent(new ComponentName("com.coloros.safecenter", "com.coloros.safecenter.startupapp.StartupAppListActivity")),
+            new Intent().setComponent(new ComponentName("com.oppo.safe", "com.oppo.safe.permission.startup.StartupAppListActivity")),
+            new Intent().setComponent(new ComponentName("com.iqoo.secure", "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity")),
+            new Intent().setComponent(new ComponentName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity")),
+            new Intent().setComponent(new ComponentName("com.samsung.android.lool", "com.samsung.android.sm.ui.battery.BatteryActivity"))
+        };
+        PackageManager pm = ctx.getPackageManager();
+        for (Intent it : intents) {
+            try {
+                if (pm.resolveActivity(it, PackageManager.MATCH_DEFAULT_ONLY) != null) {
+                    it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    ctx.startActivity(it);
+                    call.resolve(new JSObject().put("opened", true));
+                    return;
+                }
+            } catch (Exception ignored) {}
+        }
+        openAppSettings(call);
     }
 
     @PermissionCallback
@@ -694,6 +837,96 @@ public class MainActivity extends BridgeActivity {
 `;
     fs.writeFileSync(mainActPath, mainActJava, 'utf8');
   }
+
+  // 5. 写入任务栏前台保活服务 KeepAliveService.java 与开机自启接收器 BootReceiver.java
+  const keepAliveJava = `package cn.starleave.milk;
+
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.app.Service;
+import android.content.Intent;
+import android.os.Build;
+import android.os.IBinder;
+
+public class KeepAliveService extends Service {
+    private static final String CHANNEL_ID = "milk_keepalive_channel";
+    private static final int NOTIF_ID = 10017;
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        createChannel();
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        Intent launch = new Intent(this, MainActivity.class);
+        launch.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        int piFlags = Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0;
+        PendingIntent pi = PendingIntent.getActivity(this, 0, launch, piFlags);
+
+        Notification.Builder builder = Build.VERSION.SDK_INT >= 26
+                ? new Notification.Builder(this, CHANNEL_ID)
+                : new Notification.Builder(this);
+
+        builder.setContentTitle("传讯正在后台运行")
+                .setContentText("保持消息提醒与自动同步连接")
+                .setSmallIcon(android.R.drawable.stat_notify_chat)
+                .setOngoing(true)
+                .setContentIntent(pi);
+
+        startForeground(NOTIF_ID, builder.build());
+        return START_STICKY;
+    }
+
+    private void createChannel() {
+        if (Build.VERSION.SDK_INT >= 26) {
+            NotificationChannel ch = new NotificationChannel(
+                    CHANNEL_ID,
+                    "后台保活服务",
+                    NotificationManager.IMPORTANCE_LOW
+            );
+            ch.setDescription("保持传讯在任务栏存活，防止被系统清理");
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            if (nm != null) nm.createNotificationChannel(ch);
+        }
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        return null;
+    }
+}
+`;
+  fs.writeFileSync(path.join(javaPkgDir, 'KeepAliveService.java'), keepAliveJava, 'utf8');
+
+  const bootReceiverJava = `package cn.starleave.milk;
+
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.os.Build;
+
+public class BootReceiver extends BroadcastReceiver {
+    @Override
+    public void onReceive(Context context, Intent intent) {
+        SharedPreferences sp = context.getSharedPreferences("milk_keepalive", Context.MODE_PRIVATE);
+        if (!sp.getBoolean("enabled", true)) return;
+        try {
+            Intent svc = new Intent(context, KeepAliveService.class);
+            if (Build.VERSION.SDK_INT >= 26) {
+                context.startForegroundService(svc);
+            } else {
+                context.startService(svc);
+            }
+        } catch (Exception ignored) {}
+    }
+}
+`;
+  fs.writeFileSync(path.join(javaPkgDir, 'BootReceiver.java'), bootReceiverJava, 'utf8');
 }
 
 console.log(`[configure-android] Configured Android project: v${versionName} (${versionCode})`);
