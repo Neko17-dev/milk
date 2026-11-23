@@ -1,7 +1,10 @@
 (function () {
     'use strict';
 
-    var VERSION_URL = 'https://milk.starleave.cn/version.json';
+    var VERSION_URLS = [
+        'https://milk.starleave.cn/api/backup/version',
+        'https://milk.starleave.cn/version.json'
+    ];
 
     function isNativeApp() {
         try {
@@ -144,13 +147,26 @@
         document.body.appendChild(overlay);
     }
 
+    async function fetchRemoteVersion() {
+        var lastErr = null;
+        for (var i = 0; i < VERSION_URLS.length; i++) {
+            try {
+                var resp = await fetch(VERSION_URLS[i] + '?t=' + Date.now(), { cache: 'no-store' });
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                var data = await resp.json();
+                if (data && typeof data === 'object') return data;
+            } catch (e) {
+                lastErr = e;
+            }
+        }
+        throw lastErr || new Error('无法获取版本信息');
+    }
+
     async function checkNow(opts) {
         opts = opts || {};
         var silent = !!opts.silent;
         try {
-            var resp = await fetch(VERSION_URL + '?t=' + Date.now(), { cache: 'no-store' });
-            if (!resp.ok) throw new Error('HTTP ' + resp.status);
-            var remote = await resp.json();
+            var remote = await fetchRemoteVersion();
             var current = getCurrentVersion();
             var remoteCode = Number(remote.versionCode) || 0;
             var minCode = Number(remote.minVersionCode) || 0;
@@ -174,11 +190,16 @@
     }
 
     // 原生 App 启动后自动检查更新通道
-    window.addEventListener('load', function () {
+    function scheduleCheck() {
         if (isNativeApp()) {
-            setTimeout(function () { checkNow({ silent: true }); }, 2000);
+            setTimeout(function () { checkNow({ silent: true }); }, 1500);
         }
-    });
+    }
+    if (document.readyState === 'complete') {
+        scheduleCheck();
+    } else {
+        window.addEventListener('load', scheduleCheck);
+    }
 
     window.AppUpdater = {
         isNativeApp: isNativeApp,

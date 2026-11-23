@@ -225,6 +225,19 @@ class BackupHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "multiUser": MULTI_USER_MODE, "chunked": True, "adminEnabled": bool(ADMIN_TOKEN)})
             return
 
+        # 公开版本检测接口（带 CORS 头，供 Capacitor 原生 App 跨域读取 version.json）
+        if path in ("/api/backup/version", "/version"):
+            ver_file = Path(__file__).resolve().parent.parent / "version.json"
+            if not ver_file.is_file():
+                self._send_json(404, {"ok": False, "error": "version.json 不存在"})
+                return
+            try:
+                ver_data = json.loads(ver_file.read_text(encoding="utf-8"))
+                self._send_json(200, ver_data)
+            except Exception as exc:
+                self._send_json(500, {"ok": False, "error": f"读取版本信息失败: {exc}"})
+            return
+
         # 管理员只读接口：列出所有用户及其备份文件
         if path in ("/api/backup/admin/users", "/admin/users"):
             if not self._authenticate_admin():
