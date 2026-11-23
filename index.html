@@ -2109,10 +2109,12 @@
     <script src="js/listeners.js"></script>
     <script src="js/app.js"></script>
     <script src="js/cloud-backup.js"></script>
+    <script src="js/app-updater.js"></script>
     <script src="js/pwa-install.js"></script>
     <script>
-        // 注册 Service Worker（PWA 离线支持）
-        if ('serviceWorker' in navigator) {
+        // 注册 Service Worker（仅在非原生 App 浏览器环境下启用）
+        const _isNativeCap = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform());
+        if (!_isNativeCap && 'serviceWorker' in navigator) {
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('/sw.js')
                     .then(reg => console.log('[SW] 注册成功，scope:', reg.scope))

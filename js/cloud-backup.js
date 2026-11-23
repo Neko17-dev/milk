@@ -10,7 +10,10 @@
         lastError: 'cloudBackupLastError'
     };
 
-    var DEFAULT_URL = '/api/backup';
+    var IS_NATIVE_APP = !!(window.Capacitor
+        && typeof window.Capacitor.isNativePlatform === 'function'
+        && window.Capacitor.isNativePlatform());
+    var DEFAULT_URL = IS_NATIVE_APP ? 'https://milk.starleave.cn/api/backup' : '/api/backup';
     var uploading = false;
     var progressText = '';
 

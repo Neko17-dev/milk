@@ -1,0 +1,16 @@
+# Dependencies & build outputs
+app/node_modules/
+app/www/
+app/android/
+app/ios/
+app/*.apk
+app/*.keystore
+app/*.jks
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# OS & editor
+.DS_Store
+Thumbs.db

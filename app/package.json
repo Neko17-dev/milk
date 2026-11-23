@@ -1,0 +1,23 @@
+{
+  "name": "milk-android-app",
+  "version": "1.0.0",
+  "versionCode": 1,
+  "private": true,
+  "description": "传讯 Android 原生封装（Capacitor）",
+  "scripts": {
+    "sync:web": "node scripts/sync-web.mjs",
+    "android:prepare": "npm run sync:web && npx cap add android && node scripts/configure-android.mjs && npx cap sync android",
+    "android:sync": "npm run sync:web && node scripts/configure-android.mjs && npx cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.0",
+    "@capacitor/app": "^6.0.2",
+    "@capacitor/browser": "^6.0.3",
+    "@capacitor/core": "^6.2.0",
+    "@capacitor/filesystem": "^6.0.2",
+    "@capacitor/local-notifications": "^6.1.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.0"
+  }
+}

@@ -134,12 +134,35 @@ def get_chunk_dir(user_dir: Path, upload_id: str) -> Optional[Path]:
     return chunk_dir
 
 
+ALLOWED_ORIGINS = {
+    "https://milk.starleave.cn",
+    "https://localhost",
+    "http://localhost",
+    "capacitor://localhost",
+}
+
+
 class BackupHandler(BaseHTTPRequestHandler):
-    server_version = "MilkBackup/2.1"
+    server_version = "MilkBackup/2.2"
+
+    def _write_cors_headers(self) -> None:
+        origin = (self.headers.get("Origin") or "").strip()
+        if origin in ALLOWED_ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Backup-Token, X-Backup-Filename, X-Admin-Token")
+            self.send_header("Access-Control-Max-Age", "86400")
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(204)
+        self._write_cors_headers()
+        self.end_headers()
 
     def _send_json(self, code: int, payload: dict) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
+        self._write_cors_headers()
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
