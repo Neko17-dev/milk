@@ -2379,8 +2379,12 @@ const savedCover = safeGetItem(APP_PREFIX + 'playerCover');
         document.getElementById('music-subtitle').innerText = song.sub;
         
         if (song.url) {
-            if (!isPlaying) audio.preload = 'none';
-            audio.src = song.url;
+            if (isPlaying) {
+                audio.src = song.url;
+            } else {
+                audio.dataset.pendingSrc = song.url;
+                audio.removeAttribute('src');
+            }
         }
         updatePlaylistHighlight();
     }
@@ -2397,6 +2401,9 @@ const savedCover = safeGetItem(APP_PREFIX + 'playerCover');
             document.getElementById('icon-pause').style.display = 'none';
             player.classList.remove('playing');
         } else {
+            if (audio.dataset.pendingSrc && (!audio.src || audio.src !== audio.dataset.pendingSrc)) {
+                audio.src = audio.dataset.pendingSrc;
+            }
             const playPromise = audio.play();
             if (playPromise !== undefined) {
                 playPromise.then(_ => {

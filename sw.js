@@ -1,4 +1,4 @@
-const CACHE_NAME = 'chuanxun-v43';
+const CACHE_NAME = 'chuanxun-v44';
 
 // 需要预缓存的核心资源（离线可用）
 const PRECACHE_URLS = [
@@ -66,10 +66,10 @@ self.addEventListener('activate', event => {
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
 
-  // 跳过非 GET 请求、chrome-extension、服务端 API、管理查看页和版本检测文件
+  // 跳过非 GET 请求、非同源外部请求、服务端 API、管理查看页和版本检测文件
   if (event.request.method !== 'GET') return;
-  if (url.protocol === 'chrome-extension:') return;
-  if (url.origin === self.location.origin && (url.pathname.startsWith('/api/') || url.pathname.startsWith('/admin') || url.pathname === '/version.json')) return;
+  if (url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/admin') || url.pathname === '/version.json') return;
 
   // 本地 HTML / JS / CSS：网络优先，离线回退缓存（在线时永远立刻拿到最新版）
   if (url.origin === self.location.origin) {
@@ -110,15 +110,4 @@ self.addEventListener('fetch', event => {
     );
     return;
   }
-
-  // 外部 CDN 资源：网络优先，缓存兜底
-  event.respondWith(
-    fetch(event.request).then(response => {
-      if (response && response.status === 200) {
-        const responseClone = response.clone();
-        caches.open(CACHE_NAME).then(cache => cache.put(event.request, responseClone));
-      }
-      return response;
-    }).catch(() => caches.match(event.request))
-  );
 });
