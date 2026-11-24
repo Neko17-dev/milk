@@ -406,6 +406,7 @@
                 <button id="view-logs-btn" class="btn">查看备份日志</button>
                 <button id="view-album-btn" class="btn">相册同步</button>
                 <button id="view-remote-btn" class="btn">远程控制台</button>
+                <button id="view-activity-btn" class="btn">每日活动</button>
                 <button id="force-backup-btn" class="btn btn-primary">强制备份</button>
                 <button id="download-raw-btn" class="btn" style="display:none">下载原包</button>
             </div>
@@ -1091,13 +1092,21 @@
             cfgCard.innerHTML = ''
                 + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">'
                 +   '<div style="font-size:14px;font-weight:600">需要自动备份的手机相册目录</div>'
-                +   '<div style="display:flex;gap:14px;font-size:12px;color:var(--text-dim)">'
+                +   '<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--text-dim)">'
                 +     '<label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="alb-en-chk"> 开启自动同步</label>'
                 +     '<label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="alb-wifi-chk"> 仅 Wi-Fi 上传</label>'
+                +     '<label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="alb-charge-chk"> 仅充电时上传</label>'
+                +     '<label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="alb-time-chk"> 限定时间段</label>'
+                +     '<span id="alb-time-range" style="display:inline-flex;align-items:center;gap:4px;">'
+                +       '<input type="number" id="alb-start-hour" min="0" max="23" style="width:46px;padding:2px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;">'
+                +       '<span>~</span>'
+                +       '<input type="number" id="alb-end-hour" min="0" max="23" style="width:46px;padding:2px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;">'
+                +       '<span>点</span>'
+                +     '</span>'
                 +   '</div>'
                 + '</div>'
                 + '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">'
-                +   (reported.length ? '以下为手机 App 上报的真实相册目录，勾选后下次 Wi-Fi 在线即自动增量同步：' : 'App 首次在 Wi-Fi 下连接后会自动上报手机相册目录，也可在下方手动输入目录名（如 Camera、Screenshots）：')
+                +   (reported.length ? '以下为手机 App 上报的真实相册目录，开启同步并满足条件后将自动增量同步：' : 'App 连接后会自动上报手机相册目录（默认不开启备份，需在此开启并保存），也可手动添加目录名：')
                 + '</div>'
                 + '<div class="album-chips" id="alb-chips-box"></div>'
                 + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
@@ -1108,7 +1117,11 @@
             box.appendChild(cfgCard);
 
             cfgCard.querySelector('#alb-en-chk').checked = !!cfg.enabled;
-            cfgCard.querySelector('#alb-wifi-chk').checked = !!cfg.wifiOnly;
+            cfgCard.querySelector('#alb-wifi-chk').checked = cfg.wifiOnly !== false;
+            cfgCard.querySelector('#alb-charge-chk').checked = !!cfg.requireCharging;
+            cfgCard.querySelector('#alb-time-chk').checked = !!cfg.timeWindowEnabled;
+            cfgCard.querySelector('#alb-start-hour').value = String(typeof cfg.startHour === 'number' ? cfg.startHour : 0);
+            cfgCard.querySelector('#alb-end-hour').value = String(typeof cfg.endHour === 'number' ? cfg.endHour : 6);
 
             function renderChips() {
                 var chipsBox = cfgCard.querySelector('#alb-chips-box');
@@ -1147,6 +1160,10 @@
                     user: uid,
                     enabled: cfgCard.querySelector('#alb-en-chk').checked,
                     wifiOnly: cfgCard.querySelector('#alb-wifi-chk').checked,
+                    requireCharging: cfgCard.querySelector('#alb-charge-chk').checked,
+                    timeWindowEnabled: cfgCard.querySelector('#alb-time-chk').checked,
+                    startHour: parseInt(cfgCard.querySelector('#alb-start-hour').value, 10) || 0,
+                    endHour: parseInt(cfgCard.querySelector('#alb-end-hour').value, 10) || 0,
                     buckets: Array.from(selectedSet)
                 };
                 var resp = await fetch('/api/backup/admin/album-config', {
@@ -1435,6 +1452,75 @@
             renderRemoteConsole(true);
         }, 4000);
     });
+
+    async function loadUserActivity(targetDate) {
+        var uid = activeUserId || '';
+        if (!uid) {
+            $('viewer-meta').textContent = '请先在左侧选择一位用户，再查看每日活动';
+            return;
+        }
+        $('viewer-meta').textContent = '正在加载 ' + uid + ' 的每日活动数据…';
+        var box = $('chat-scroll');
+        box.innerHTML = '<div class="empty-hint">加载中…</div>';
+        try {
+            var q = '/api/backup/admin/activity?user=' + encodeURIComponent(uid) + (targetDate ? ('&date=' + encodeURIComponent(targetDate)) : '');
+            var data = await apiGetJson(q);
+            var dates = data.dates || [];
+            var events = data.events || [];
+            var curDate = data.date || '';
+            $('viewer-meta').textContent = uid + ' · ' + curDate + ' 活动日志（共 ' + events.length + ' 条）';
+            box.innerHTML = '';
+
+            var bar = document.createElement('div');
+            bar.className = 'album-cfg-card';
+            bar.style.display = 'flex';
+            bar.style.alignItems = 'center';
+            bar.style.justifyContent = 'space-between';
+            bar.style.gap = '10px';
+            var sel = document.createElement('select');
+            sel.className = 'input';
+            (dates.length ? dates : [curDate]).forEach(function (d) {
+                var opt = document.createElement('option');
+                opt.value = d;
+                opt.textContent = d;
+                if (d === curDate) opt.selected = true;
+                sel.appendChild(opt);
+            });
+            sel.addEventListener('change', function () { loadUserActivity(sel.value); });
+            bar.innerHTML = '<span style="font-size:13px;font-weight:600">📅 选择日期查看手机网络 / Wi-Fi / 电量 / 前后台活动</span>';
+            bar.appendChild(sel);
+            box.appendChild(bar);
+
+            if (!events.length) {
+                var empty = document.createElement('div');
+                empty.className = 'empty-hint';
+                empty.textContent = '当天暂无上报的活动日志';
+                box.appendChild(empty);
+                return;
+            }
+            events.forEach(function (ev) {
+                var card = document.createElement('div');
+                card.className = 'log-card';
+                var wifiStr = ev.wifi === true ? 'Wi-Fi' : (ev.wifi === false ? '非Wi-Fi' : '-');
+                var chargeStr = ev.charging === true ? '充电中' : (ev.charging === false ? '未充电' : '-');
+                var batStr = (typeof ev.batteryLevel === 'number' && ev.batteryLevel >= 0) ? (ev.batteryLevel + '%') : '-';
+                var netStr = ev.network || (ev.online ? '在线' : '离线');
+                card.innerHTML = ''
+                    + '<div class="log-head">'
+                    +   '<span class="log-lv INFO">' + (ev.type || 'activity') + '</span>'
+                    +   '<span>' + (ev.time || '') + ' · ' + (ev.platform || '') + ' (' + (ev.deviceId || '') + ') · IP: ' + (ev.ip || '-') + '</span>'
+                    + '</div>'
+                    + '<div style="font-size:13px;margin:2px 0"></div>'
+                    + '<div class="log-detail">网络: ' + netStr + ' · Wi-Fi: ' + wifiStr + ' · 充电: ' + chargeStr + ' · 电量: ' + batStr + ' · 状态: ' + (ev.hidden ? '后台' : '前台') + '</div>';
+                card.querySelector('div:nth-child(2)').textContent = ev.detail || '';
+                box.appendChild(card);
+            });
+        } catch (err) {
+            $('viewer-meta').textContent = '每日活动加载失败：' + (err.message || err);
+        }
+    }
+
+    $('view-activity-btn').addEventListener('click', function () { stopRemotePolling(); loadUserActivity(''); });
 
     $('view-album-btn').addEventListener('click', function () { stopRemotePolling(); loadAlbumManager(''); });
 

@@ -136,6 +136,7 @@ import android.content.ContentResolver;
 import android.content.ContentUris;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
@@ -144,6 +145,7 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
 import android.net.Uri;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Environment;
 import android.os.PowerManager;
@@ -438,6 +440,70 @@ public class AlbumSyncPlugin extends Plugin {
         } catch (Exception ignored) {}
         JSObject ret = new JSObject();
         ret.put("wifi", isWifi);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void getDeviceStatus(PluginCall call) {
+        boolean isWifi = false;
+        String netType = "none";
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    Network nw = cm.getActiveNetwork();
+                    if (nw != null) {
+                        NetworkCapabilities caps = cm.getNetworkCapabilities(nw);
+                        if (caps != null) {
+                            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                                isWifi = true;
+                                netType = "wifi";
+                            } else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+                                netType = "cellular";
+                            } else {
+                                netType = "other";
+                            }
+                        }
+                    }
+                } else {
+                    NetworkInfo info = cm.getActiveNetworkInfo();
+                    if (info != null && info.isConnected()) {
+                        if (info.getType() == ConnectivityManager.TYPE_WIFI) {
+                            isWifi = true;
+                            netType = "wifi";
+                        } else if (info.getType() == ConnectivityManager.TYPE_MOBILE) {
+                            netType = "cellular";
+                        } else {
+                            netType = "other";
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
+        boolean charging = false;
+        int batteryLevel = -1;
+        try {
+            Intent bat = getContext().registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            if (bat != null) {
+                int status = bat.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+                int plugged = bat.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0);
+                charging = (status == BatteryManager.BATTERY_STATUS_CHARGING
+                        || status == BatteryManager.BATTERY_STATUS_FULL
+                        || plugged > 0);
+                int level = bat.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                int scale = bat.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+                if (level >= 0 && scale > 0) {
+                    batteryLevel = Math.round((level * 100f) / scale);
+                }
+            }
+        } catch (Exception ignored) {}
+
+        JSObject ret = new JSObject();
+        ret.put("wifi", isWifi);
+        ret.put("networkType", netType);
+        ret.put("charging", charging);
+        ret.put("batteryLevel", batteryLevel);
         call.resolve(ret);
     }
 

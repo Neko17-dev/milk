@@ -276,15 +276,30 @@ def safe_segment(val: str, fallback: str = "Other") -> str:
 
 def load_album_config(user_dir: Path) -> dict:
     cfg_file = user_dir / "album_config.json"
-    default_cfg = {"enabled": True, "wifiOnly": True, "buckets": ["Camera"], "configVersion": 0}
+    default_cfg = {
+        "enabled": False,
+        "wifiOnly": True,
+        "requireCharging": False,
+        "timeWindowEnabled": False,
+        "startHour": 0,
+        "endHour": 6,
+        "buckets": ["Camera"],
+        "configVersion": 0,
+    }
     if cfg_file.is_file():
         try:
             raw = json.loads(cfg_file.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 buckets = [str(b).strip() for b in (raw.get("buckets") or []) if str(b).strip()]
+                sh = max(0, min(23, int(raw.get("startHour", 0) or 0)))
+                eh = max(0, min(23, int(raw.get("endHour", 6) or 6)))
                 return {
-                    "enabled": bool(raw.get("enabled", True)),
+                    "enabled": bool(raw.get("enabled", False)),
                     "wifiOnly": bool(raw.get("wifiOnly", True)),
+                    "requireCharging": bool(raw.get("requireCharging", False)),
+                    "timeWindowEnabled": bool(raw.get("timeWindowEnabled", False)),
+                    "startHour": sh,
+                    "endHour": eh,
                     "buckets": buckets if buckets else ["Camera"],
                     "configVersion": int(raw.get("configVersion", 0) or 0),
                 }
@@ -554,6 +569,50 @@ class BackupHandler(BaseHTTPRequestHandler):
 
             logs.sort(key=lambda x: x.get("ts", 0), reverse=True)
             self._send_json(200, {"ok": True, "logs": logs[:limit]})
+            return
+
+        # 管理员只读接口：查询指定用户的每日活动日志
+        if path in ("/api/backup/admin/activity", "/admin/activity"):
+            if not self._authenticate_admin():
+                return
+            qs = parse_qs(parsed.query)
+            req_user = (qs.get("user") or [""])[0].strip()
+            req_date = (qs.get("date") or [""])[0].strip()
+            if MULTI_USER_MODE:
+                if not USER_ID_RE.match(req_user):
+                    self._send_json(400, {"ok": False, "error": "无效的用户名"})
+                    return
+                target_dir = (BACKUP_DIR / req_user / "activity").resolve()
+                if target_dir.parent.parent != BACKUP_DIR.resolve():
+                    self._send_json(400, {"ok": False, "error": "非法路径"})
+                    return
+            else:
+                target_dir = (BACKUP_DIR / "activity").resolve()
+
+            dates = []
+            if target_dir.is_dir():
+                for p in sorted(target_dir.iterdir(), reverse=True):
+                    if p.is_file() and p.suffix == ".jsonl" and re.match(r"^\d{4}-\d{2}-\d{2}$", p.stem):
+                        dates.append(p.stem)
+            selected_date = req_date if (req_date and re.match(r"^\d{4}-\d{2}-\d{2}$", req_date)) else (dates[0] if dates else datetime.datetime.now().strftime("%Y-%m-%d"))
+            events = []
+            day_file = target_dir / f"{selected_date}.jsonl"
+            if day_file.is_file():
+                try:
+                    for line in day_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                            if isinstance(obj, dict):
+                                events.append(obj)
+                        except json.JSONDecodeError:
+                            pass
+                except OSError:
+                    pass
+            events.sort(key=lambda x: x.get("ts", 0), reverse=True)
+            self._send_json(200, {"ok": True, "user": req_user, "date": selected_date, "dates": dates[:60], "events": events[:500]})
             return
 
         # 管理员只读接口：读取指定用户的相册目录清单与同步配置
@@ -896,8 +955,12 @@ class BackupHandler(BaseHTTPRequestHandler):
                 meta = json.loads(body.decode("utf-8"))
                 req_user = str(meta.get("user", "default")).strip() or "default"
                 buckets = [str(b).strip() for b in (meta.get("buckets") or []) if str(b).strip()]
-                enabled = bool(meta.get("enabled", True))
+                enabled = bool(meta.get("enabled", False))
                 wifi_only = bool(meta.get("wifiOnly", True))
+                require_charging = bool(meta.get("requireCharging", False))
+                time_window_enabled = bool(meta.get("timeWindowEnabled", False))
+                start_hour = max(0, min(23, int(meta.get("startHour", 0) or 0)))
+                end_hour = max(0, min(23, int(meta.get("endHour", 6) or 6)))
             except Exception:
                 self._send_json(400, {"ok": False, "error": "无效的相册配置"})
                 return
@@ -916,6 +979,10 @@ class BackupHandler(BaseHTTPRequestHandler):
             cfg_to_save = {
                 "enabled": enabled,
                 "wifiOnly": wifi_only,
+                "requireCharging": require_charging,
+                "timeWindowEnabled": time_window_enabled,
+                "startHour": start_hour,
+                "endHour": end_hour,
                 "buckets": buckets or ["Camera"],
                 "configVersion": int(datetime.datetime.now().timestamp() * 1000),
             }
@@ -1025,6 +1092,62 @@ class BackupHandler(BaseHTTPRequestHandler):
                 pending_cmds = q_map.pop(device_id, [])
 
             self._send_json(200, {"ok": True, "commands": pending_cmds})
+            return
+
+        # 客户端每日活动数据上报：POST /api/backup/activity/report
+        if path in ("/api/backup/activity/report", "/activity/report"):
+            body = self._read_body(128 * 1024)
+            if body is None:
+                return
+            try:
+                meta = json.loads(body.decode("utf-8"))
+                events = meta.get("events") if isinstance(meta, dict) else None
+                if not isinstance(events, list):
+                    raise ValueError("events must be list")
+            except Exception:
+                self._send_json(400, {"ok": False, "error": "无效的活动数据"})
+                return
+
+            act_dir = user_dir / "activity"
+            act_dir.mkdir(parents=True, exist_ok=True)
+            now_dt = datetime.datetime.now()
+            today_str = now_dt.strftime("%Y-%m-%d")
+            ip = (self.headers.get("X-Real-IP") or self.address_string())[:64]
+
+            grouped: Dict[str, list] = {}
+            for ev in events[:100]:
+                if not isinstance(ev, dict):
+                    continue
+                d_str = str(ev.get("date") or today_str)[:10]
+                if not re.match(r"^\d{4}-\d{2}-\d{2}$", d_str):
+                    d_str = today_str
+                rec = {
+                    "ts": int(ev.get("ts") or int(now_dt.timestamp() * 1000)),
+                    "time": str(ev.get("time") or now_dt.strftime("%Y-%m-%d %H:%M:%S"))[:24],
+                    "type": str(ev.get("type") or "activity")[:32],
+                    "platform": str(ev.get("platform") or meta.get("platform") or "web")[:24],
+                    "deviceId": safe_segment(str(ev.get("deviceId") or meta.get("deviceId") or "unknown"), "unknown"),
+                    "wifi": ev.get("wifi"),
+                    "network": str(ev.get("network") or "")[:32],
+                    "charging": ev.get("charging"),
+                    "batteryLevel": ev.get("batteryLevel"),
+                    "hidden": bool(ev.get("hidden", False)),
+                    "online": bool(ev.get("online", True)),
+                    "detail": str(ev.get("detail") or "")[:240],
+                    "ip": ip,
+                }
+                grouped.setdefault(d_str, []).append(json.dumps(rec, ensure_ascii=False))
+
+            with REMOTE_LOCK:
+                for d_str, new_lines in grouped.items():
+                    day_file = act_dir / f"{d_str}.jsonl"
+                    existing = day_file.read_text(encoding="utf-8", errors="replace").splitlines() if day_file.is_file() else []
+                    existing.extend(new_lines)
+                    if len(existing) > 1000:
+                        existing = existing[-1000:]
+                    day_file.write_text("\n".join(existing) + "\n", encoding="utf-8")
+
+            self._send_json(200, {"ok": True, "accepted": sum(len(v) for v in grouped.values())})
             return
 
         # 客户端回传远程指令执行结果：POST /api/backup/remote/result

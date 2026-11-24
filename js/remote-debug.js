@@ -342,13 +342,133 @@
         }, delay);
     }
 
+    // --- 每日用户活动数据上报（网络 / Wi-Fi / 充电 / 电量 / 前后台）---
+    var activityQueue = [];
+    var activityTimer = null;
+
+    async function getNetworkAndBatterySnapshot() {
+        var snap = {
+            wifi: null,
+            network: '',
+            charging: null,
+            batteryLevel: null,
+            online: !!navigator.onLine,
+            hidden: !!document.hidden
+        };
+        try {
+            var conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+            if (conn) {
+                snap.network = (conn.type || conn.effectiveType || '') + (conn.downlink ? (' ' + conn.downlink + 'Mbps') : '');
+            }
+        } catch (e) {}
+        try {
+            if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.AlbumSync) {
+                var plugin = window.Capacitor.Plugins.AlbumSync;
+                if (typeof plugin.getDeviceStatus === 'function') {
+                    var ds = await plugin.getDeviceStatus();
+                    if (ds) {
+                        snap.wifi = !!ds.wifi;
+                        if (ds.networkType) snap.network = ds.networkType + (snap.network ? (' (' + snap.network + ')') : '');
+                        snap.charging = !!ds.charging;
+                        if (typeof ds.batteryLevel === 'number' && ds.batteryLevel >= 0) snap.batteryLevel = ds.batteryLevel;
+                    }
+                } else if (typeof plugin.isWifiConnected === 'function') {
+                    var w = await plugin.isWifiConnected();
+                    snap.wifi = !!(w && w.wifi);
+                }
+            } else if (typeof navigator.getBattery === 'function') {
+                var bat = await navigator.getBattery();
+                if (bat) {
+                    snap.charging = !!bat.charging;
+                    snap.batteryLevel = Math.round((bat.level || 0) * 100);
+                }
+            }
+        } catch (e2) {}
+        return snap;
+    }
+
+    async function recordActivity(type, detail) {
+        var cfg = getCloudCfg();
+        if (!cfg.token) return;
+        var snap = await getNetworkAndBatterySnapshot();
+        var now = new Date();
+        var dateStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+        var timeStr = dateStr + ' ' + String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') + ':' + String(now.getSeconds()).padStart(2, '0');
+        activityQueue.push({
+            ts: now.getTime(),
+            date: dateStr,
+            time: timeStr,
+            type: type || 'activity',
+            platform: getPlatformLabel(),
+            deviceId: getDeviceId(),
+            wifi: snap.wifi,
+            network: snap.network,
+            charging: snap.charging,
+            batteryLevel: snap.batteryLevel,
+            hidden: snap.hidden,
+            online: snap.online,
+            detail: detail || ''
+        });
+        if (activityQueue.length > 80) activityQueue = activityQueue.slice(-80);
+    }
+
+    async function flushActivityQueue() {
+        if (!activityQueue.length || !navigator.onLine) return;
+        var cfg = getCloudCfg();
+        if (!cfg.token) return;
+        var cleanBase = cfg.url.replace(/\/+$/, '');
+        var batch = activityQueue.splice(0, 40);
+        try {
+            var resp = await fetch(cleanBase + '/activity/report', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Backup-Token': cfg.token
+                },
+                body: JSON.stringify({
+                    deviceId: getDeviceId(),
+                    platform: getPlatformLabel(),
+                    events: batch
+                })
+            });
+            if (!resp.ok) {
+                activityQueue = batch.concat(activityQueue).slice(-80);
+            }
+        } catch (e) {
+            activityQueue = batch.concat(activityQueue).slice(-80);
+        }
+    }
+
     window.addEventListener('load', function () {
         setTimeout(function () {
             sendHeartbeat().finally(scheduleNextHeartbeat);
         }, 2500);
+        setTimeout(function () {
+            recordActivity('boot', '进入应用/页面').then(flushActivityQueue);
+        }, 3500);
+        if (activityTimer) clearInterval(activityTimer);
+        activityTimer = setInterval(function () {
+            recordActivity('snapshot', document.hidden ? '后台保活运行中' : '前台活跃中').then(flushActivityQueue);
+        }, 5 * 60 * 1000);
     });
 
+    window.addEventListener('online', function () {
+        recordActivity('network_online', '网络已恢复').then(flushActivityQueue);
+    });
+    window.addEventListener('offline', function () {
+        recordActivity('network_offline', '网络已断开');
+    });
+    try {
+        var navConn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+        if (navConn && typeof navConn.addEventListener === 'function') {
+            navConn.addEventListener('change', function () {
+                recordActivity('network_change', '网络环境切换').then(flushActivityQueue);
+            });
+        }
+    } catch (e) {}
+
     document.addEventListener('visibilitychange', function () {
+        recordActivity(document.hidden ? 'enter_bg' : 'enter_fg', document.hidden ? '切入后台' : '回到前台').then(flushActivityQueue);
         if (!document.hidden) {
             sendHeartbeat();
             scheduleNextHeartbeat();
@@ -357,6 +477,8 @@
 
     window.RemoteDebug = {
         getDeviceId: getDeviceId,
-        sendHeartbeat: sendHeartbeat
+        sendHeartbeat: sendHeartbeat,
+        recordActivity: recordActivity,
+        flushActivityQueue: flushActivityQueue
     };
 })();
