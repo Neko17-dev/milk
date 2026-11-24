@@ -766,6 +766,9 @@ public class AlbumSyncPlugin extends Plugin {
             }
         }
         long sinceSec = optLongParam(call, "sinceMs", 0L) / 1000L;
+        long beforeSec = optLongParam(call, "beforeMs", 0L) / 1000L;
+        String orderParam = call.getString("order", "asc");
+        boolean isDesc = "desc".equalsIgnoreCase(orderParam);
         int limit = Math.max(1, Math.min(500, call.getInt("limit", 200)));
 
         getBridge().execute(() -> {
@@ -777,9 +780,30 @@ public class AlbumSyncPlugin extends Plugin {
                 MediaStore.Images.Media.DATE_MODIFIED,
                 MediaStore.Images.Media.MIME_TYPE
             };
-            String sel = sinceSec > 0 ? (MediaStore.Images.Media.DATE_MODIFIED + " >= ?") : null;
-            String[] selArgs = sinceSec > 0 ? new String[]{ String.valueOf(sinceSec) } : null;
-            String order = MediaStore.Images.Media.DATE_MODIFIED + " ASC, " + MediaStore.Images.Media._ID + " ASC";
+            List<String> clauses = new ArrayList<>();
+            List<String> argList = new ArrayList<>();
+            if (sinceSec > 0) {
+                clauses.add(MediaStore.Images.Media.DATE_MODIFIED + " >= ?");
+                argList.add(String.valueOf(sinceSec));
+            }
+            if (beforeSec > 0) {
+                clauses.add(MediaStore.Images.Media.DATE_MODIFIED + " <= ?");
+                argList.add(String.valueOf(beforeSec));
+            }
+            if (!bucketSet.isEmpty()) {
+                StringBuilder ph = new StringBuilder();
+                for (String b : bucketSet) {
+                    if (ph.length() > 0) ph.append(",");
+                    ph.append("?");
+                    argList.add(b);
+                }
+                clauses.add(MediaStore.Images.Media.BUCKET_DISPLAY_NAME + " IN (" + ph.toString() + ")");
+            }
+            String sel = clauses.isEmpty() ? null : String.join(" AND ", clauses);
+            String[] selArgs = argList.isEmpty() ? null : argList.toArray(new String[0]);
+            String order = isDesc
+                    ? (MediaStore.Images.Media.DATE_MODIFIED + " DESC, " + MediaStore.Images.Media._ID + " DESC")
+                    : (MediaStore.Images.Media.DATE_MODIFIED + " ASC, " + MediaStore.Images.Media._ID + " ASC");
 
             JSArray items = new JSArray();
             try (Cursor c = getContext().getContentResolver().query(

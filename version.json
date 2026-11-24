@@ -1,9 +1,9 @@
 {
-  "version": "1.1.4",
-  "versionCode": 27,
-  "minVersionCode": 27,
+  "version": "1.1.5",
+  "versionCode": 28,
+  "minVersionCode": 28,
   "forceUpdate": true,
-  "webVersion": "2026.11.24.37",
-  "changelog": "v1.1.4：新增本应用流量消耗（Rx/Tx）、CPU 占用时间与电量变化回传",
+  "webVersion": "2026.11.25.1",
+  "changelog": "v1.1.5：新增 3 种相册同步模式（仅新增/倒序优先近照/全量顺序）、实时进度条与原生 SQL 目录过滤加速",
   "downloadUrl": "https://milk.starleave.cn/download/milk-latest.apk"
 }

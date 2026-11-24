@@ -3,16 +3,32 @@
 
     var KEYS = {
         sinceMs: 'albumSyncSinceMs',
+        beforeMs: 'albumSyncBeforeMs',
         syncedHashes: 'albumSyncDoneHashes',
         lastRun: 'albumSyncLastRun',
         enabled: 'albumSyncLocalEnabled',
         bucketsSig: 'albumSyncBucketsSig',
-        configVer: 'albumSyncConfigVer'
+        configVer: 'albumSyncConfigVer',
+        mode: 'albumSyncMode'
     };
     var CHUNK_SIZE = 1024 * 1024; // 1 MB 分片断点续传
     var syncing = false;
     var resyncQueued = false;
     var statusText = '等待 Wi-Fi 就绪';
+    var lastProgressSentAt = 0;
+
+    function reportAlbumProgress(cleanBase, token, info, forceNow) {
+        if (!cleanBase || !token) return;
+        var now = Date.now();
+        if (!forceNow && (now - lastProgressSentAt) < 1500) return;
+        lastProgressSentAt = now;
+        try {
+            sendXhr('POST', cleanBase + '/album/progress', {
+                'Content-Type': 'application/json',
+                'X-Backup-Token': token
+            }, JSON.stringify(info || {}), 6000).catch(function () {});
+        } catch (e) {}
+    }
 
     function getTodayDateStr() {
         var d = new Date();
@@ -146,7 +162,7 @@
         });
     }
 
-    async function uploadSinglePhotoResumable(plugin, cleanBase, token, photo, hash, idx, totalCount) {
+    async function uploadSinglePhotoResumable(plugin, cleanBase, token, photo, hash, idx, totalCount, progressCtx) {
         var totalChunks = Math.max(1, Math.ceil(photo.size / CHUNK_SIZE));
         var uploadId = 'alb_' + hash.slice(0, 24) + '_' + photo.size;
         var authHeaders = { 'X-Backup-Token': token };
@@ -177,8 +193,23 @@
             while (true) {
                 attempt++;
                 try {
+                    var pct = Math.round((i + 1) / totalChunks * 100);
                     setStatus('Wi-Fi 同步：' + photo.bucket + ' ' + (idx + 1) + '/' + totalCount
-                        + '（' + Math.round((i + 1) / totalChunks * 100) + '%）');
+                        + '（' + pct + '%）');
+                    if (progressCtx) {
+                        reportAlbumProgress(cleanBase, token, {
+                            state: 'uploading',
+                            text: statusText,
+                            syncedCount: progressCtx.syncedCount + idx,
+                            totalTargetCount: progressCtx.totalTargetCount,
+                            currentBucket: photo.bucket || '',
+                            currentFile: photo.name || '',
+                            filePercent: pct,
+                            todayBytes: getTodayUploadedBytes(),
+                            dailyLimitMB: progressCtx.dailyLimitMB,
+                            syncMode: progressCtx.syncMode
+                        }, false);
+                    }
                     await sendXhr('POST', chunkUrl, {
                         'Content-Type': 'application/octet-stream',
                         'X-Backup-Token': token
@@ -248,9 +279,13 @@
             }
 
             // 2. 只要有相册权限且在线，立刻上报手机相册目录清单，供 /admin 后台勾选
+            var albumCountsMap = {};
             try {
                 var albRes = await plugin.listAlbums();
                 if (albRes && Array.isArray(albRes.albums)) {
+                    albRes.albums.forEach(function (a) {
+                        if (a && a.name) albumCountsMap[a.name] = Number(a.count) || 0;
+                    });
                     await sendXhr('POST', cleanBase + '/album/buckets', {
                         'Content-Type': 'application/json',
                         'X-Backup-Token': cfg.token
@@ -274,6 +309,9 @@
                 timeWindowEnabled: false,
                 startHour: 0,
                 endHour: 6,
+                dailyLimitMB: 0,
+                syncMode: 'new_only',
+                modeAnchorMs: 0,
                 buckets: ['Camera']
             };
             try {
@@ -284,12 +322,36 @@
                 if (rcJson && rcJson.ok) remoteCfg = rcJson;
             } catch (e) { }
 
+            var targetBuckets = Array.isArray(remoteCfg.buckets) && remoteCfg.buckets.length
+                ? remoteCfg.buckets
+                : ['Camera'];
+            var totalTargetCount = 0;
+            targetBuckets.forEach(function (b) { totalTargetCount += (albumCountsMap[b] || 0); });
+            var syncMode = remoteCfg.syncMode || 'new_only';
+            var limitMB = Number(remoteCfg.dailyLimitMB) || 0;
+            var doneSetNow = getDoneSet();
+
+            function emitStatusProg(state, extra) {
+                var baseInfo = {
+                    state: state,
+                    text: statusText,
+                    syncedCount: doneSetNow.size,
+                    totalTargetCount: totalTargetCount,
+                    todayBytes: getTodayUploadedBytes(),
+                    dailyLimitMB: limitMB,
+                    syncMode: syncMode
+                };
+                if (extra) Object.keys(extra).forEach(function (k) { baseInfo[k] = extra[k]; });
+                reportAlbumProgress(cleanBase, cfg.token, baseInfo, true);
+            }
+
             if (!remoteCfg.enabled && !manual) {
                 setStatus('后台已关闭相册同步');
+                emitStatusProg('paused');
                 return { ok: false, reason: 'remote_disabled' };
             }
 
-            // 4. 检查限定条件：时间段、Wi-Fi、充电状态（仅自动同步受限，手动触发不受限）
+            // 4. 检查限定条件：时间段、Wi-Fi、充电状态、每日流量上限
             if (!manual) {
                 if (remoteCfg.timeWindowEnabled) {
                     var hr = new Date().getHours();
@@ -298,6 +360,7 @@
                     var inWindow = (sh <= eh) ? (hr >= sh && hr < eh) : (hr >= sh || hr < eh);
                     if (!inWindow) {
                         setStatus('不在允许同步时间段（' + sh + ':00-' + eh + ':00）');
+                        emitStatusProg('paused');
                         return { ok: false, reason: 'outside_time_window' };
                     }
                 }
@@ -313,54 +376,90 @@
                 }
                 if (remoteCfg.wifiOnly && (!devStatus || !devStatus.wifi)) {
                     setStatus('非 Wi-Fi 环境，已暂停相册同步');
+                    emitStatusProg('paused');
                     return { ok: false, reason: 'not_wifi' };
                 }
                 if (remoteCfg.requireCharging && (!devStatus || !devStatus.charging)) {
                     setStatus('未连接充电器，已暂停相册同步');
+                    emitStatusProg('paused');
                     return { ok: false, reason: 'not_charging' };
                 }
-                var limitMB = Number(remoteCfg.dailyLimitMB) || 0;
                 if (limitMB > 0 && getTodayUploadedBytes() >= limitMB * 1024 * 1024) {
                     setStatus('今日相册同步已达上限（' + limitMB + ' MB），明日恢复');
+                    emitStatusProg('paused');
                     reportAlbumLog('info', 'album_limit', '今日相册上传流量已达上限 ' + limitMB + ' MB，自动暂停');
                     return { ok: false, reason: 'daily_limit' };
                 }
             }
 
-            // 5. 按增量游标列出目标相册的新增照片（若目录清单有变更，重置游标以确保新勾选目录的历史图也能同步）
-            var targetBuckets = Array.isArray(remoteCfg.buckets) && remoteCfg.buckets.length
-                ? remoteCfg.buckets
-                : ['Camera'];
+            // 5. 按同步模式计算游标并列出目标照片
             var bucketsSig = targetBuckets.slice().sort().join(',');
             var prevBucketsSig = localStorage.getItem(KEYS.bucketsSig) || '';
-            if (prevBucketsSig !== bucketsSig) {
-                localStorage.setItem(KEYS.sinceMs, '0');
+            var prevMode = localStorage.getItem(KEYS.mode) || '';
+            if (prevBucketsSig !== bucketsSig || prevMode !== syncMode) {
+                localStorage.setItem(KEYS.sinceMs, syncMode === 'new_only' ? String(remoteCfg.modeAnchorMs || Date.now()) : '0');
+                localStorage.setItem(KEYS.beforeMs, '0');
                 localStorage.setItem(KEYS.bucketsSig, bucketsSig);
+                localStorage.setItem(KEYS.mode, syncMode);
             }
             if (remoteCfg.configVersion) {
                 localStorage.setItem(KEYS.configVer, String(remoteCfg.configVersion));
             }
-            var sinceMs = parseInt(localStorage.getItem(KEYS.sinceMs) || '0', 10) || 0;
-            setStatus('正在扫描相册（' + targetBuckets.join(', ') + '）…');
 
-            var listRes = await plugin.listPhotos({
-                buckets: targetBuckets,
-                sinceMs: sinceMs,
-                limit: 150
-            });
-            var photos = (listRes && Array.isArray(listRes.photos)) ? listRes.photos : [];
+            var sinceMs = parseInt(localStorage.getItem(KEYS.sinceMs) || '0', 10) || 0;
+            if (syncMode === 'new_only' && remoteCfg.modeAnchorMs && sinceMs < remoteCfg.modeAnchorMs) {
+                sinceMs = remoteCfg.modeAnchorMs;
+                localStorage.setItem(KEYS.sinceMs, String(sinceMs));
+            }
+            var beforeMs = parseInt(localStorage.getItem(KEYS.beforeMs) || '0', 10) || 0;
+
+            setStatus('正在扫描相册（' + targetBuckets.join(', ') + '）…');
+            emitStatusProg('scanning');
+
+            var photos = [];
+            var usedDescBackfill = false;
+            if (syncMode === 'newest_first') {
+                // 先扫最新的 25 张确保新拍照片优先秒传，若都已同步且存在更早游标再倒序补传历史图
+                var topRes = await plugin.listPhotos({ buckets: targetBuckets, order: 'desc', limit: 25 });
+                var topList = (topRes && Array.isArray(topRes.photos)) ? topRes.photos : [];
+                photos = topList;
+                if (beforeMs > 0) {
+                    var olderRes = await plugin.listPhotos({ buckets: targetBuckets, order: 'desc', beforeMs: beforeMs, limit: 120 });
+                    var olderList = (olderRes && Array.isArray(olderRes.photos)) ? olderRes.photos : [];
+                    if (olderList.length) {
+                        usedDescBackfill = true;
+                        photos = topList.concat(olderList);
+                    }
+                }
+            } else {
+                var listRes = await plugin.listPhotos({
+                    buckets: targetBuckets,
+                    sinceMs: sinceMs,
+                    order: 'asc',
+                    limit: 150
+                });
+                photos = (listRes && Array.isArray(listRes.photos)) ? listRes.photos : [];
+            }
+
             if (!photos.length) {
                 setStatus('已同步最新（' + targetBuckets.join(', ') + '）');
+                emitStatusProg('idle');
                 return { ok: true, uploaded: 0 };
             }
 
             // 6. 计算哈希并用本地缓存 + 服务端去重
-            var doneSet = getDoneSet();
+            var doneSet = doneSetNow;
             var candidates = [];
             var maxDateMs = sinceMs;
+            var minDateMs = beforeMs;
+            var seenPhotoKey = {};
             for (var i = 0; i < photos.length; i++) {
                 var p = photos[i];
+                var pKey = (p.id >= 0 ? ('id:' + p.id) : ('p:' + (p.path || p.name)));
+                if (seenPhotoKey[pKey]) continue;
+                seenPhotoKey[pKey] = true;
                 if (p.dateMs && p.dateMs > maxDateMs) maxDateMs = p.dateMs;
+                if (p.dateMs && (minDateMs === 0 || p.dateMs < minDateMs)) minDateMs = p.dateMs;
                 var hRes = await plugin.getPhotoSha256({ id: p.id, path: p.path || '' });
                 var hash = hRes && hRes.hash ? hRes.hash : '';
                 if (!hash || doneSet.has(hash)) continue;
@@ -368,8 +467,13 @@
             }
 
             if (!candidates.length) {
-                if (maxDateMs > sinceMs) localStorage.setItem(KEYS.sinceMs, String(maxDateMs));
+                if (syncMode === 'newest_first' && minDateMs > 0 && (beforeMs === 0 || minDateMs < beforeMs)) {
+                    localStorage.setItem(KEYS.beforeMs, String(minDateMs));
+                } else if (maxDateMs > sinceMs) {
+                    localStorage.setItem(KEYS.sinceMs, String(maxDateMs));
+                }
                 setStatus('已同步最新（' + targetBuckets.join(', ') + '）');
+                emitStatusProg('idle');
                 return { ok: true, uploaded: 0 };
             }
 
@@ -393,25 +497,43 @@
             // 7. 逐张分片断点续传
             var uploadedCount = 0;
             for (var k = 0; k < toUpload.length; k++) {
-                if (remoteCfg.wifiOnly && !manual) {
-                    var netCheck = await plugin.isWifiConnected();
-                    if (!netCheck || !netCheck.wifi) {
-                        setStatus('Wi-Fi 已断开，将在下次连接时断点续传');
+                if (!manual) {
+                    if (remoteCfg.wifiOnly) {
+                        var netCheck = await plugin.isWifiConnected();
+                        if (!netCheck || !netCheck.wifi) {
+                            setStatus('Wi-Fi 已断开，将在下次连接时断点续传');
+                            emitStatusProg('paused');
+                            return { ok: true, uploaded: uploadedCount, paused: true };
+                        }
+                    }
+                    if (limitMB > 0 && getTodayUploadedBytes() >= limitMB * 1024 * 1024) {
+                        setStatus('今日相册同步已达上限（' + limitMB + ' MB），明日恢复');
+                        emitStatusProg('paused');
                         return { ok: true, uploaded: uploadedCount, paused: true };
                     }
                 }
                 var item = toUpload[k];
-                await uploadSinglePhotoResumable(plugin, cleanBase, cfg.token, item.photo, item.hash, k, toUpload.length);
+                await uploadSinglePhotoResumable(plugin, cleanBase, cfg.token, item.photo, item.hash, k, toUpload.length, {
+                    syncedCount: doneSet.size,
+                    totalTargetCount: totalTargetCount,
+                    dailyLimitMB: limitMB,
+                    syncMode: syncMode
+                });
                 doneSet.add(item.hash);
                 saveDoneSet(doneSet);
                 uploadedCount++;
             }
 
-            if (maxDateMs > sinceMs) {
+            if (syncMode === 'newest_first') {
+                if (minDateMs > 0 && (beforeMs === 0 || minDateMs < beforeMs)) {
+                    localStorage.setItem(KEYS.beforeMs, String(minDateMs));
+                }
+            } else if (maxDateMs > sinceMs) {
                 localStorage.setItem(KEYS.sinceMs, String(maxDateMs));
             }
             localStorage.setItem(KEYS.lastRun, String(Date.now()));
             setStatus('已同步最新（本次新增 ' + uploadedCount + ' 张）');
+            emitStatusProg('idle', { currentFile: '', filePercent: 100 });
             if (uploadedCount > 0) {
                 reportAlbumLog('info', 'album_done', '相册增量同步完成：新增 ' + uploadedCount + ' 张', {
                     buckets: targetBuckets,

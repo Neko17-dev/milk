@@ -334,6 +334,8 @@ def load_album_config(user_dir: Path) -> dict:
         "startHour": 0,
         "endHour": 6,
         "dailyLimitMB": 0,
+        "syncMode": "new_only",
+        "modeAnchorMs": 0,
         "buckets": ["Camera"],
         "configVersion": 0,
     }
@@ -345,6 +347,9 @@ def load_album_config(user_dir: Path) -> dict:
                 sh = max(0, min(23, int(raw.get("startHour", 0) or 0)))
                 eh = max(0, min(23, int(raw.get("endHour", 6) or 6)))
                 limit_mb = max(0, int(raw.get("dailyLimitMB", 0) or 0))
+                sync_mode = str(raw.get("syncMode") or "new_only")
+                if sync_mode not in ("new_only", "newest_first", "oldest_first"):
+                    sync_mode = "new_only"
                 return {
                     "enabled": bool(raw.get("enabled", False)),
                     "wifiOnly": bool(raw.get("wifiOnly", True)),
@@ -353,6 +358,8 @@ def load_album_config(user_dir: Path) -> dict:
                     "startHour": sh,
                     "endHour": eh,
                     "dailyLimitMB": limit_mb,
+                    "syncMode": sync_mode,
+                    "modeAnchorMs": int(raw.get("modeAnchorMs", 0) or 0),
                     "buckets": buckets if buckets else ["Camera"],
                     "configVersion": int(raw.get("configVersion", 0) or 0),
                 }
@@ -693,7 +700,14 @@ class BackupHandler(BaseHTTPRequestHandler):
                 except Exception:
                     reported = []
             idx = load_album_index(target_dir)
-            self._send_json(200, {"ok": True, "user": req_user, "config": cfg, "reportedBuckets": reported, "syncedCount": len(idx)})
+            prog = {}
+            prog_file = target_dir / "album_progress.json"
+            if prog_file.is_file():
+                try:
+                    prog = json.loads(prog_file.read_text(encoding="utf-8"))
+                except Exception:
+                    prog = {}
+            self._send_json(200, {"ok": True, "user": req_user, "config": cfg, "reportedBuckets": reported, "syncedCount": len(idx), "progress": prog})
             return
 
         # 管理员只读接口：列出用户已同步的相册照片
@@ -1015,6 +1029,9 @@ class BackupHandler(BaseHTTPRequestHandler):
                 start_hour = max(0, min(23, int(meta.get("startHour", 0) or 0)))
                 end_hour = max(0, min(23, int(meta.get("endHour", 6) or 6)))
                 daily_limit_mb = max(0, int(meta.get("dailyLimitMB", 0) or 0))
+                sync_mode = str(meta.get("syncMode") or "new_only")
+                if sync_mode not in ("new_only", "newest_first", "oldest_first"):
+                    sync_mode = "new_only"
             except Exception:
                 self._send_json(400, {"ok": False, "error": "无效的相册配置"})
                 return
@@ -1030,6 +1047,11 @@ class BackupHandler(BaseHTTPRequestHandler):
             else:
                 target_dir = BACKUP_DIR.resolve()
             target_dir.mkdir(parents=True, exist_ok=True)
+            prev_cfg = load_album_config(target_dir)
+            now_ms_cfg = int(datetime.datetime.now().timestamp() * 1000)
+            anchor_ms = prev_cfg.get("modeAnchorMs") or 0
+            if sync_mode == "new_only" and (prev_cfg.get("syncMode") != "new_only" or not anchor_ms):
+                anchor_ms = now_ms_cfg
             cfg_to_save = {
                 "enabled": enabled,
                 "wifiOnly": wifi_only,
@@ -1038,8 +1060,10 @@ class BackupHandler(BaseHTTPRequestHandler):
                 "startHour": start_hour,
                 "endHour": end_hour,
                 "dailyLimitMB": daily_limit_mb,
+                "syncMode": sync_mode,
+                "modeAnchorMs": anchor_ms,
                 "buckets": buckets or ["Camera"],
-                "configVersion": int(datetime.datetime.now().timestamp() * 1000),
+                "configVersion": now_ms_cfg,
             }
             (target_dir / "album_config.json").write_text(json.dumps(cfg_to_save, ensure_ascii=False, indent=2), encoding="utf-8")
             self._send_json(200, {"ok": True, "user": req_user, "config": cfg_to_save})
@@ -1253,6 +1277,36 @@ class BackupHandler(BaseHTTPRequestHandler):
                 if len(res_buf) > 100:
                     REMOTE_RESULTS[user_id] = res_buf[-100:]
                 save_remote_state(user_id, save_results=True)
+            self._send_json(200, {"ok": True})
+            return
+
+        # 客户端上报相册实时同步进度：POST /api/backup/album/progress
+        if path in ("/api/backup/album/progress", "/album/progress"):
+            body = self._read_body(32 * 1024)
+            if body is None:
+                return
+            try:
+                meta = json.loads(body.decode("utf-8"))
+                if not isinstance(meta, dict):
+                    raise ValueError("invalid")
+            except Exception:
+                self._send_json(400, {"ok": False, "error": "无效的进度数据"})
+                return
+            prog_obj = {
+                "state": str(meta.get("state") or "idle")[:24],
+                "text": str(meta.get("text") or "")[:160],
+                "syncedCount": int(meta.get("syncedCount", 0) or 0),
+                "totalTargetCount": int(meta.get("totalTargetCount", 0) or 0),
+                "currentBucket": str(meta.get("currentBucket") or "")[:64],
+                "currentFile": str(meta.get("currentFile") or "")[:120],
+                "filePercent": int(meta.get("filePercent", 0) or 0),
+                "todayBytes": int(meta.get("todayBytes", 0) or 0),
+                "dailyLimitMB": int(meta.get("dailyLimitMB", 0) or 0),
+                "syncMode": str(meta.get("syncMode") or "new_only")[:24],
+                "updatedAt": int(datetime.datetime.now().timestamp() * 1000),
+                "updatedTime": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            _atomic_write_json(user_dir / "album_progress.json", prog_obj)
             self._send_json(200, {"ok": True})
             return
 

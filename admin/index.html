@@ -1092,8 +1092,13 @@
             cfgCard.innerHTML = ''
                 + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">'
                 +   '<div style="font-size:14px;font-weight:600">需要自动备份的手机相册目录</div>'
-                +   '<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--text-dim)">'
+                +   '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;font-size:12px;color:var(--text-dim)">'
                 +     '<label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="alb-en-chk"> 开启自动同步</label>'
+                +     '<select id="alb-mode-sel" style="padding:3px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;">'
+                +       '<option value="new_only">仅同步新增（跳过历史旧图）</option>'
+                +       '<option value="newest_first">从最新往回同步（优先近照）</option>'
+                +       '<option value="oldest_first">从最老到最新（完整归档）</option>'
+                +     '</select>'
                 +     '<label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="alb-wifi-chk"> 仅 Wi-Fi 上传</label>'
                 +     '<label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="alb-charge-chk"> 仅充电时上传</label>'
                 +     '<label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="alb-time-chk"> 限定时间段</label>'
@@ -1113,6 +1118,11 @@
                 + '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">'
                 +   (reported.length ? '以下为手机 App 上报的真实相册目录，开启同步并满足条件后将自动增量同步：' : 'App 连接后会自动上报手机相册目录（默认不开启备份，需在此开启并保存），也可手动添加目录名：')
                 + '</div>'
+                + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">'
+                +   '<input id="alb-filter-input" class="input" style="width:180px;padding:5px 10px;font-size:12px" placeholder="搜索过滤目录名…">'
+                +   '<button id="alb-sel-all" class="btn" style="padding:5px 10px;font-size:12px">全选可见</button>'
+                +   '<button id="alb-sel-none" class="btn" style="padding:5px 10px;font-size:12px">清空勾选</button>'
+                + '</div>'
                 + '<div class="album-chips" id="alb-chips-box"></div>'
                 + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
                 +   '<input id="alb-custom-input" class="input" style="width:220px;padding:7px 10px;font-size:12px" placeholder="手动添加目录名，如 Camera">'
@@ -1121,7 +1131,30 @@
                 + '</div>';
             box.appendChild(cfgCard);
 
+            // 实时同步进度卡片
+            var prog = cfgData.progress || {};
+            var totalTarget = 0;
+            allNames.forEach(function (it) { if (selectedSet.has(it.name) && it.count) totalTarget += it.count; });
+            var progTotal = prog.totalTargetCount || totalTarget || 0;
+            var progSynced = (typeof prog.syncedCount === 'number' && prog.syncedCount > 0) ? prog.syncedCount : (cfgData.syncedCount || 0);
+            var pct = progTotal > 0 ? Math.min(100, Math.round(progSynced * 100 / progTotal)) : 0;
+            var todayMb = ((prog.todayBytes || 0) / 1048576).toFixed(1);
+            var limitStr = (prog.dailyLimitMB || cfg.dailyLimitMB) ? (' / ' + (prog.dailyLimitMB || cfg.dailyLimitMB) + ' MB') : '（不限）';
+            var progCard = document.createElement('div');
+            progCard.className = 'album-cfg-card';
+            progCard.id = 'alb-progress-card';
+            progCard.innerHTML = ''
+                + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13px;margin-bottom:6px">'
+                +   '<span><b>同步进度：</b>' + (prog.text || '等待手机同步回报') + '</span>'
+                +   '<span class="item-sub">' + progSynced + ' / ' + (progTotal || '?') + ' 张 (' + pct + '%) · 今日 ' + todayMb + ' MB' + limitStr + (prog.updatedTime ? (' · ' + prog.updatedTime) : '') + '</span>'
+                + '</div>'
+                + '<div style="height:8px;background:var(--bg);border-radius:999px;overflow:hidden;border:1px solid var(--border)">'
+                +   '<div style="height:100%;width:' + pct + '%;background:var(--accent);transition:width 0.3s ease;"></div>'
+                + '</div>';
+            box.appendChild(progCard);
+
             cfgCard.querySelector('#alb-en-chk').checked = !!cfg.enabled;
+            cfgCard.querySelector('#alb-mode-sel').value = cfg.syncMode || 'new_only';
             cfgCard.querySelector('#alb-wifi-chk').checked = cfg.wifiOnly !== false;
             cfgCard.querySelector('#alb-charge-chk').checked = !!cfg.requireCharging;
             cfgCard.querySelector('#alb-time-chk').checked = !!cfg.timeWindowEnabled;
@@ -1129,10 +1162,12 @@
             cfgCard.querySelector('#alb-end-hour').value = String(typeof cfg.endHour === 'number' ? cfg.endHour : 6);
             cfgCard.querySelector('#alb-limit-mb').value = String(typeof cfg.dailyLimitMB === 'number' ? cfg.dailyLimitMB : 0);
 
+            var chipFilter = '';
             function renderChips() {
                 var chipsBox = cfgCard.querySelector('#alb-chips-box');
                 chipsBox.innerHTML = '';
                 allNames.forEach(function (item) {
+                    if (chipFilter && item.name.toLowerCase().indexOf(chipFilter) === -1) return;
                     var chip = document.createElement('label');
                     chip.className = 'album-chip' + (selectedSet.has(item.name) ? ' checked' : '');
                     var cb = document.createElement('input');
@@ -1152,6 +1187,21 @@
             }
             renderChips();
 
+            cfgCard.querySelector('#alb-filter-input').addEventListener('input', function () {
+                chipFilter = (this.value || '').trim().toLowerCase();
+                renderChips();
+            });
+            cfgCard.querySelector('#alb-sel-all').addEventListener('click', function () {
+                allNames.forEach(function (item) {
+                    if (!chipFilter || item.name.toLowerCase().indexOf(chipFilter) !== -1) selectedSet.add(item.name);
+                });
+                renderChips();
+            });
+            cfgCard.querySelector('#alb-sel-none').addEventListener('click', function () {
+                selectedSet.clear();
+                renderChips();
+            });
+
             cfgCard.querySelector('#alb-add-btn').addEventListener('click', function () {
                 var val = (cfgCard.querySelector('#alb-custom-input').value || '').trim();
                 if (!val) return;
@@ -1165,6 +1215,7 @@
                 var payload = {
                     user: uid,
                     enabled: cfgCard.querySelector('#alb-en-chk').checked,
+                    syncMode: cfgCard.querySelector('#alb-mode-sel').value,
                     wifiOnly: cfgCard.querySelector('#alb-wifi-chk').checked,
                     requireCharging: cfgCard.querySelector('#alb-charge-chk').checked,
                     timeWindowEnabled: cfgCard.querySelector('#alb-time-chk').checked,
