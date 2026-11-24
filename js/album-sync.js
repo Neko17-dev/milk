@@ -11,7 +11,28 @@
     };
     var CHUNK_SIZE = 1024 * 1024; // 1 MB 分片断点续传
     var syncing = false;
+    var resyncQueued = false;
     var statusText = '等待 Wi-Fi 就绪';
+
+    function getTodayDateStr() {
+        var d = new Date();
+        return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    }
+
+    function getTodayUploadedBytes() {
+        try {
+            return parseInt(localStorage.getItem('milk_album_bytes_' + getTodayDateStr()) || '0', 10) || 0;
+        } catch (e) { return 0; }
+    }
+
+    function addTodayUploadedBytes(n) {
+        if (!n || n <= 0) return;
+        try {
+            var k = 'milk_album_bytes_' + getTodayDateStr();
+            var cur = parseInt(localStorage.getItem(k) || '0', 10) || 0;
+            localStorage.setItem(k, String(cur + n));
+        } catch (e) {}
+    }
 
     function isNativeApp() {
         try {
@@ -162,6 +183,7 @@
                         'Content-Type': 'application/octet-stream',
                         'X-Backup-Token': token
                     }, new Blob([bytes], { type: 'application/octet-stream' }), 45000);
+                    addTodayUploadedBytes(len);
                     break;
                 } catch (err) {
                     if ((err && err.status === 401) || attempt >= 3) throw err;
@@ -297,6 +319,12 @@
                     setStatus('未连接充电器，已暂停相册同步');
                     return { ok: false, reason: 'not_charging' };
                 }
+                var limitMB = Number(remoteCfg.dailyLimitMB) || 0;
+                if (limitMB > 0 && getTodayUploadedBytes() >= limitMB * 1024 * 1024) {
+                    setStatus('今日相册同步已达上限（' + limitMB + ' MB），明日恢复');
+                    reportAlbumLog('info', 'album_limit', '今日相册上传流量已达上限 ' + limitMB + ' MB，自动暂停');
+                    return { ok: false, reason: 'daily_limit' };
+                }
             }
 
             // 5. 按增量游标列出目标相册的新增照片（若目录清单有变更，重置游标以确保新勾选目录的历史图也能同步）
@@ -405,6 +433,10 @@
             return { ok: false, error: msg };
         } finally {
             syncing = false;
+            if (resyncQueued) {
+                resyncQueued = false;
+                setTimeout(function () { runSync({ manual: false }); }, 800);
+            }
         }
     }
 
@@ -459,7 +491,9 @@
                         if (typeof plugin.consumePendingAlbumChange === 'function') {
                             plugin.consumePendingAlbumChange().catch(function () { });
                         }
-                        if (!syncing) {
+                        if (syncing) {
+                            resyncQueued = true;
+                        } else {
                             runSync({ manual: false });
                         }
                     });

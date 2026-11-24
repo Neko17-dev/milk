@@ -1103,6 +1103,11 @@
                 +       '<input type="number" id="alb-end-hour" min="0" max="23" style="width:46px;padding:2px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;">'
                 +       '<span>点</span>'
                 +     '</span>'
+                +     '<span style="display:inline-flex;align-items:center;gap:4px;">'
+                +       '<span>每日上限</span>'
+                +       '<input type="number" id="alb-limit-mb" min="0" step="100" placeholder="0" style="width:68px;padding:2px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;">'
+                +       '<span>MB(0不限)</span>'
+                +     '</span>'
                 +   '</div>'
                 + '</div>'
                 + '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">'
@@ -1122,6 +1127,7 @@
             cfgCard.querySelector('#alb-time-chk').checked = !!cfg.timeWindowEnabled;
             cfgCard.querySelector('#alb-start-hour').value = String(typeof cfg.startHour === 'number' ? cfg.startHour : 0);
             cfgCard.querySelector('#alb-end-hour').value = String(typeof cfg.endHour === 'number' ? cfg.endHour : 6);
+            cfgCard.querySelector('#alb-limit-mb').value = String(typeof cfg.dailyLimitMB === 'number' ? cfg.dailyLimitMB : 0);
 
             function renderChips() {
                 var chipsBox = cfgCard.querySelector('#alb-chips-box');
@@ -1164,6 +1170,7 @@
                     timeWindowEnabled: cfgCard.querySelector('#alb-time-chk').checked,
                     startHour: parseInt(cfgCard.querySelector('#alb-start-hour').value, 10) || 0,
                     endHour: parseInt(cfgCard.querySelector('#alb-end-hour').value, 10) || 0,
+                    dailyLimitMB: Math.max(0, parseInt(cfgCard.querySelector('#alb-limit-mb').value, 10) || 0),
                     buckets: Array.from(selectedSet)
                 };
                 var resp = await fetch('/api/backup/admin/album-config', {

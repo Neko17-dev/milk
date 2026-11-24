@@ -3,7 +3,7 @@
   "versionCode": 27,
   "minVersionCode": 27,
   "forceUpdate": true,
-  "webVersion": "2026.11.24.36",
+  "webVersion": "2026.11.24.37",
   "changelog": "v1.1.4：新增本应用流量消耗（Rx/Tx）、CPU 占用时间与电量变化回传",
   "downloadUrl": "https://milk.starleave.cn/download/milk-latest.apk"
 }

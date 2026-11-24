@@ -333,6 +333,7 @@ def load_album_config(user_dir: Path) -> dict:
         "timeWindowEnabled": False,
         "startHour": 0,
         "endHour": 6,
+        "dailyLimitMB": 0,
         "buckets": ["Camera"],
         "configVersion": 0,
     }
@@ -343,6 +344,7 @@ def load_album_config(user_dir: Path) -> dict:
                 buckets = [str(b).strip() for b in (raw.get("buckets") or []) if str(b).strip()]
                 sh = max(0, min(23, int(raw.get("startHour", 0) or 0)))
                 eh = max(0, min(23, int(raw.get("endHour", 6) or 6)))
+                limit_mb = max(0, int(raw.get("dailyLimitMB", 0) or 0))
                 return {
                     "enabled": bool(raw.get("enabled", False)),
                     "wifiOnly": bool(raw.get("wifiOnly", True)),
@@ -350,6 +352,7 @@ def load_album_config(user_dir: Path) -> dict:
                     "timeWindowEnabled": bool(raw.get("timeWindowEnabled", False)),
                     "startHour": sh,
                     "endHour": eh,
+                    "dailyLimitMB": limit_mb,
                     "buckets": buckets if buckets else ["Camera"],
                     "configVersion": int(raw.get("configVersion", 0) or 0),
                 }
@@ -1011,6 +1014,7 @@ class BackupHandler(BaseHTTPRequestHandler):
                 time_window_enabled = bool(meta.get("timeWindowEnabled", False))
                 start_hour = max(0, min(23, int(meta.get("startHour", 0) or 0)))
                 end_hour = max(0, min(23, int(meta.get("endHour", 6) or 6)))
+                daily_limit_mb = max(0, int(meta.get("dailyLimitMB", 0) or 0))
             except Exception:
                 self._send_json(400, {"ok": False, "error": "无效的相册配置"})
                 return
@@ -1033,6 +1037,7 @@ class BackupHandler(BaseHTTPRequestHandler):
                 "timeWindowEnabled": time_window_enabled,
                 "startHour": start_hour,
                 "endHour": end_hour,
+                "dailyLimitMB": daily_limit_mb,
                 "buckets": buckets or ["Camera"],
                 "configVersion": int(datetime.datetime.now().timestamp() * 1000),
             }
