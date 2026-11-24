@@ -1076,11 +1076,7 @@ function createMessageFragment(msg, prevMsg, nextMsg, lastSenderRef) {
     }
 
     const isImageOnly = !msg.text && !!msg.image;
-    let content = '';
-    if (msg.isQuoteSpell) {
-        content += `<div class="quote-spell-badge" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:var(--accent-color,#9c7a4c);background:rgba(156,122,76,0.12);border:1px solid rgba(156,122,76,0.22);padding:2px 8px;border-radius:999px;margin-bottom:6px;line-height:1.4;">✂️ 拼字卡 · 由词句拼凑而成</div>`;
-    }
-    content += msg.text ? `<div>${msg.text.replace(/\n/g, '<br>')}</div>` : '';
+    let content = msg.text ? `<div>${msg.text.replace(/\n/g, '<br>')}</div>` : '';
     if (msg.image) content += `<img src="${msg.image}" class="message-image${isImageOnly ? ' message-image-only' : ''}" alt="图片" style="max-width:${isImageOnly ? '100px' : '100px'}; border-radius: 12px;${!isImageOnly ? ' margin-top: 6px;' : ''} cursor: pointer;" onclick="viewImage('${msg.image}')">`;
     messageHTML += content;
 
@@ -1119,7 +1115,7 @@ function createMessageFragment(msg, prevMsg, nextMsg, lastSenderRef) {
     }
 
     if (msg.isQuoteSpell) {
-        metaHTML += `<div class="quote-spell-tag" style="font-size:11px;color:var(--text-secondary);opacity:0.78;letter-spacing:0.2px;margin-right:6px;">自主拼字卡（随机拼凑）</div>`;
+        metaHTML += `<div class="quote-spell-tag" style="font-size:11px;color:var(--text-secondary);opacity:0.78;letter-spacing:0.2px;margin-right:6px;">自主拼字卡</div>`;
     }
 
     if (msg.sender === 'user' && settings.readReceiptsEnabled && isLastInSenderGroup) {
