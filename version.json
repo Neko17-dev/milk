@@ -1,9 +1,9 @@
 {
-  "version": "1.1.0",
-  "versionCode": 23,
-  "minVersionCode": 23,
+  "version": "1.1.1",
+  "versionCode": 24,
+  "minVersionCode": 24,
   "forceUpdate": true,
-  "webVersion": "2026.11.24.32",
-  "changelog": "v1.1.0：修复相册 ID 兼容、新增高优先级横幅通知、设备型号与 ANDROID_ID 绑定、服务端日志持久化、条件相册同步与每日活动上报",
+  "webVersion": "2026.11.24.33",
+  "changelog": "v1.1.1：原生 KeepAliveService 后台独立心跳与消息/来电高优横幅接管",
   "downloadUrl": "https://milk.starleave.cn/download/milk-latest.apk"
 }
