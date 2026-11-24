@@ -1250,21 +1250,39 @@
             async function requestBrowsePage(newOffset) {
                 browseOffset = Math.max(0, newOffset);
                 var bBucket = browseSel.value || 'Camera';
-                browseCard.querySelector('#alb-browse-status').textContent = '正在请求手机生成 320×320 缩略图…';
+                var bStatus = browseCard.querySelector('#alb-browse-status');
+                var sentAt = Date.now();
+                bStatus.textContent = '正在下发预览指令，等待手机回传 320×320 缩略图…';
                 try {
-                    await sendRemoteCmd(uid, '_all', 'album_browse', { bucket: bBucket, offset: browseOffset, limit: 40 });
-                    for (var tryI = 0; tryI < 12; tryI++) {
-                        await new Promise(function (r) { setTimeout(r, 800); });
+                    var sendRes = await sendRemoteCmd(uid, '_all', 'album_browse', { bucket: bBucket, offset: browseOffset, limit: 40 });
+                    if (!sendRes || !sendRes.queued) {
+                        bStatus.textContent = '当前没有检测到该用户的在线设备，请先在手机打开 App 后再试';
+                        return;
+                    }
+                    bStatus.textContent = '已下发到 ' + sendRes.queued + ' 台设备，等待下次心跳拉取回传（最多 25 秒）…';
+                    for (var tryI = 0; tryI < 25; tryI++) {
+                        await new Promise(function (r) { setTimeout(r, 1000); });
                         var check = await apiGetJson('/api/backup/admin/album/browse?user=' + encodeURIComponent(uid));
                         var br = check.browse || {};
-                        if (br.bucket === bBucket && Number(br.offset) === browseOffset && (Date.now() - (br.updatedAt || 0)) < 20000) {
+                        if (br.bucket === bBucket && Number(br.offset) === browseOffset && (br.updatedAt || 0) >= sentAt - 2000) {
                             await renderBrowseCache();
                             return;
                         }
                     }
-                    await renderBrowseCache();
+                    // 超时后检查设备回执里是否有报错（例如 APK 版本低于 v1.1.6）
+                    try {
+                        var rc = await apiGetJson('/api/backup/admin/remote/clients?user=' + encodeURIComponent(uid));
+                        var errs = (rc.results || []).filter(function (r) {
+                            return r.cmd === 'album_browse' && r.ts >= sentAt - 2000 && !r.ok && r.error;
+                        });
+                        if (errs.length) {
+                            bStatus.textContent = '手机端执行失败：' + errs[0].error;
+                            return;
+                        }
+                    } catch (e2) {}
+                    bStatus.textContent = '等待手机回传超时（手机可能处于息屏休眠或尚未升级到 v1.1.6+ APK）';
                 } catch (err) {
-                    browseCard.querySelector('#alb-browse-status').textContent = '拉取预览失败：' + (err.message || err);
+                    bStatus.textContent = '拉取预览失败：' + (err.message || err);
                 }
             }
 
