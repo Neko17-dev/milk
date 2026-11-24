@@ -675,12 +675,14 @@ class BackupHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "user": req_user, "date": selected_date, "dates": dates[:60], "events": events[:500]})
             return
 
-        # 管理员只读接口：获取手机端上报的相册缩略图浏览缓存
+        # 管理员只读接口：获取服务器本地化保存的手机相册缩略图缓存（支持按目录+分页读取）
         if path in ("/api/backup/admin/album/browse", "/admin/album/browse"):
             if not self._authenticate_admin():
                 return
             qs = parse_qs(parsed.query)
             req_user = (qs.get("user") or ["default"])[0].strip()
+            req_bucket = (qs.get("bucket") or [""])[0].strip()
+            req_offset_raw = (qs.get("offset") or [""])[0].strip()
             if MULTI_USER_MODE:
                 if not USER_ID_RE.match(req_user):
                     self._send_json(400, {"ok": False, "error": "无效的用户名"})
@@ -688,9 +690,18 @@ class BackupHandler(BaseHTTPRequestHandler):
                 target_dir = (BACKUP_DIR / req_user).resolve()
             else:
                 target_dir = BACKUP_DIR.resolve()
+
+            browse_dir = target_dir / "album_browse"
             cache_file = target_dir / "album_browse_cache.json"
+            if req_bucket and req_offset_raw.isdigit():
+                page_file = browse_dir / f"{safe_segment(req_bucket, '_all')}__{int(req_offset_raw)}.json"
+                if page_file.is_file():
+                    cache_file = page_file
+                else:
+                    cache_file = None
+
             data = {}
-            if cache_file.is_file():
+            if cache_file and cache_file.is_file():
                 try:
                     data = json.loads(cache_file.read_text(encoding="utf-8"))
                 except Exception:
@@ -1402,6 +1413,8 @@ class BackupHandler(BaseHTTPRequestHandler):
                 "updatedTime": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
             _atomic_write_json(user_dir / "album_browse_cache.json", browse_obj)
+            page_file = user_dir / "album_browse" / f"{safe_segment(browse_obj['bucket'] or '_all', '_all')}__{browse_obj['offset']}.json"
+            _atomic_write_json(page_file, browse_obj)
             self._send_json(200, {"ok": True, "count": len(browse_obj["items"])})
             return
 

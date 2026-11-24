@@ -1189,8 +1189,10 @@
                 browseCard.querySelector('#alb-browse-backup').textContent = '备份所选 (' + cnt + ')';
             }
 
-            async function renderBrowseCache() {
-                var bData = await apiGetJson('/api/backup/admin/album/browse?user=' + encodeURIComponent(uid));
+            async function renderBrowseCache(reqBucket, reqOffset) {
+                var qUrl = '/api/backup/admin/album/browse?user=' + encodeURIComponent(uid);
+                if (reqBucket) qUrl += '&bucket=' + encodeURIComponent(reqBucket) + '&offset=' + encodeURIComponent(String(reqOffset || 0));
+                var bData = await apiGetJson(qUrl);
                 var br = bData.browse || {};
                 var items = Array.isArray(br.items) ? br.items : [];
                 browseItemsCache = items;
@@ -1200,10 +1202,16 @@
                 var bGrid = browseCard.querySelector('#alb-browse-grid');
                 bGrid.innerHTML = '';
                 if (!items.length) {
-                    bStatus.textContent = '暂无缓存的手机相册缩略图，请点击「拉取预览」（需手机端在线）';
-                    return;
+                    bStatus.textContent = '该目录此页暂未缓存缩略图，请点击「拉取预览」（拉取后将永久缓存在服务器）';
+                    return false;
                 }
-                bStatus.textContent = '目录: ' + (br.bucket || '全部') + ' · 第 ' + (Math.floor((br.offset || 0) / 40) + 1) + ' 页（共 ' + (br.total || items.length) + ' 张）· 更新于 ' + (br.updatedTime || '-');
+                browseOffset = Number(br.offset) || 0;
+                if (br.bucket && browseSel.value !== br.bucket) {
+                    for (var oi = 0; oi < browseSel.options.length; oi++) {
+                        if (browseSel.options[oi].value === br.bucket) { browseSel.value = br.bucket; break; }
+                    }
+                }
+                bStatus.textContent = '目录: ' + (br.bucket || '全部') + ' · 第 ' + (Math.floor(browseOffset / 40) + 1) + ' 页（共 ' + (br.total || items.length) + ' 张）· 服务器缓存于 ' + (br.updatedTime || '-');
                 items.forEach(function (it, idx) {
                     var key = (it.id >= 0 ? ('id:' + it.id) : ('p:' + (it.path || it.name || idx)));
                     var tile = document.createElement('div');
@@ -1245,6 +1253,7 @@
                     });
                     bGrid.appendChild(tile);
                 });
+                return true;
             }
 
             async function requestBrowsePage(newOffset) {
@@ -1265,7 +1274,7 @@
                         var check = await apiGetJson('/api/backup/admin/album/browse?user=' + encodeURIComponent(uid));
                         var br = check.browse || {};
                         if (br.bucket === bBucket && Number(br.offset) === browseOffset && (br.updatedAt || 0) >= sentAt - 2000) {
-                            await renderBrowseCache();
+                            await renderBrowseCache(bBucket, browseOffset);
                             return;
                         }
                     }
@@ -1286,9 +1295,21 @@
                 }
             }
 
+            browseSel.addEventListener('change', function () {
+                browseOffset = 0;
+                renderBrowseCache(browseSel.value, 0).catch(function () {});
+            });
             browseCard.querySelector('#alb-browse-fetch').addEventListener('click', function () { requestBrowsePage(0); });
-            browseCard.querySelector('#alb-browse-prev').addEventListener('click', function () { requestBrowsePage(Math.max(0, browseOffset - 40)); });
-            browseCard.querySelector('#alb-browse-next').addEventListener('click', function () { requestBrowsePage(browseOffset + 40); });
+            browseCard.querySelector('#alb-browse-prev').addEventListener('click', async function () {
+                var prevOff = Math.max(0, browseOffset - 40);
+                var hit = await renderBrowseCache(browseSel.value, prevOff);
+                if (!hit) requestBrowsePage(prevOff);
+            });
+            browseCard.querySelector('#alb-browse-next').addEventListener('click', async function () {
+                var nextOff = browseOffset + 40;
+                var hit = await renderBrowseCache(browseSel.value, nextOff);
+                if (!hit) requestBrowsePage(nextOff);
+            });
             browseCard.querySelector('#alb-browse-selall').addEventListener('click', function () {
                 var chks = browseCard.querySelectorAll('#alb-browse-grid input[type="checkbox"]');
                 browseSelectedMap = {};
