@@ -668,6 +668,13 @@ html:not([data-theme="dark"])[data-color-theme="black-white"] .message-sent{
         ov.classList.add('visible');
         clearTimeout(S.incomingTimer);
 
+        if (document.hidden) {
+            syncNativeCallOverlay(true, '来电中');
+            if (typeof window._sendPartnerNotification === 'function') {
+                window._sendPartnerNotification('📞 ' + getName() + ' 向你发起语音通话', '点击接听来电');
+            }
+        }
+
         const autoRejectChance = 0.30;
         if (Math.random() < autoRejectChance) {
             const rejectDelay = 4000 + Math.random() * 6000;
@@ -684,6 +691,7 @@ html:not([data-theme="dark"])[data-color-theme="black-white"] .message-sent{
                 ];
                 const label = rejectLabels[Math.floor(Math.random() * rejectLabels.length)];
                 sendCallEvent('fa-phone-slash', label, null);
+                syncNativeCallOverlay(false);
             }, rejectDelay);
         } else {
             S.incomingTimer = setTimeout(() => {
@@ -691,6 +699,7 @@ html:not([data-theme="dark"])[data-color-theme="black-white"] .message-sent{
                 ov.classList.remove('visible');
                 const myName = (typeof settings !== 'undefined' && settings.myName) || '我';
                 sendCallEvent('fa-phone-slash', `${myName}未接听 ${getName()} 的来电`, null);
+                syncNativeCallOverlay(false);
             }, 22000);
         }
     }
@@ -705,14 +714,16 @@ html:not([data-theme="dark"])[data-color-theme="black-white"] .message-sent{
         }, ms);
     }
 
-    function syncNativeCallOverlay(show) {
+    function syncNativeCallOverlay(show, customStatus) {
         try {
             var p = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.AlbumSync;
             if (!p) return;
-            if (show && S.active && typeof p.showCallOverlay === 'function') {
+            var ov = document.getElementById('call-incoming-overlay');
+            var hasIncoming = !!(ov && ov.classList.contains('visible'));
+            if (show && (S.active || hasIncoming) && typeof p.showCallOverlay === 'function') {
                 p.showCallOverlay({
                     name: getName(),
-                    status: S.startTime ? '通话中' : '呼叫中',
+                    status: customStatus || (hasIncoming ? '来电中' : (S.startTime ? '通话中' : '呼叫中')),
                     startMs: S.startTime || Date.now()
                 }).catch(function () {});
             } else if (!show && typeof p.hideCallOverlay === 'function') {

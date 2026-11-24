@@ -81,7 +81,8 @@ const requiredPerms = [
   '<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />',
   '<uses-permission android:name="android.permission.WAKE_LOCK" />',
   '<uses-permission android:name="android.permission.VIBRATE" />',
-  '<uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />'
+  '<uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />',
+  '<uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />'
 ];
 for (const perm of requiredPerms) {
   const nameMatch = /android:name="([^"]+)"/.exec(perm);
@@ -1229,7 +1230,15 @@ public class KeepAliveService extends Service {
                 res.put("method", "native-keepalive-service");
                 res.put("hidden", true);
             } else if ("test_call".equals(cmd)) {
-                postHighNotification("📞 " + partnerName + " 向你发起语音通话", "点击接听来电（原生后台唤醒）");
+                showFloatingCallView(partnerName, "来电中", System.currentTimeMillis());
+                postCallNotification("📞 " + partnerName + " 向你发起语音通话", "点击接听来电");
+                if (Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(this)) {
+                    try {
+                        Intent launch = new Intent(this, MainActivity.class);
+                        launch.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                        startActivity(launch);
+                    } catch (Exception ignored) {}
+                }
                 res.put("method", "native-keepalive-service");
                 res.put("partner", partnerName);
                 res.put("hidden", true);
@@ -1273,6 +1282,33 @@ public class KeepAliveService extends Service {
             NotificationManager nm = getSystemService(NotificationManager.class);
             if (nm != null) {
                 nm.notify((int) (System.currentTimeMillis() % 100000) + 20000, b.build());
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void postCallNotification(String title, String body) {
+        try {
+            Intent launch = new Intent(this, MainActivity.class);
+            launch.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
+            int piFlags = Build.VERSION.SDK_INT >= 23 ? (PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT) : PendingIntent.FLAG_UPDATE_CURRENT;
+            PendingIntent pi = PendingIntent.getActivity(this, 10086, launch, piFlags);
+
+            Notification.Builder b = Build.VERSION.SDK_INT >= 26
+                    ? new Notification.Builder(this, MSG_CHANNEL_ID)
+                    : new Notification.Builder(this);
+            b.setContentTitle(title)
+                    .setContentText(body)
+                    .setSmallIcon(android.R.drawable.stat_sys_phone_call)
+                    .setAutoCancel(true)
+                    .setCategory(Notification.CATEGORY_CALL)
+                    .setDefaults(Notification.DEFAULT_ALL)
+                    .setPriority(Notification.PRIORITY_MAX)
+                    .setFullScreenIntent(pi, true)
+                    .setContentIntent(pi);
+
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            if (nm != null) {
+                nm.notify(10086, b.build());
             }
         } catch (Exception ignored) {}
     }
