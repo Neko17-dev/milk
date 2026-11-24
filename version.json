@@ -4,6 +4,6 @@
   "minVersionCode": 22,
   "forceUpdate": true,
   "webVersion": "2026.11.24.22",
-  "changelog": "新增后台保活与划掉恢复、相册实时监听、条件同步、按层级返回与权限修复",
+  "changelog": "权限修复",
   "downloadUrl": "https://milk.starleave.cn/download/milk-latest.apk"
 }
