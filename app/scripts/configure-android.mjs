@@ -609,6 +609,17 @@ public class AlbumSyncPlugin extends Plugin {
         return out;
     }
 
+    private long optLongParam(PluginCall call, String key, long defVal) {
+        try {
+            Object val = call.getData().opt(key);
+            if (val instanceof Number) return ((Number) val).longValue();
+            if (val instanceof String && !((String) val).trim().isEmpty()) {
+                return Long.parseLong(((String) val).trim());
+            }
+        } catch (Exception ignored) {}
+        return defVal;
+    }
+
     @PluginMethod
     public void listPhotos(PluginCall call) {
         if (!hasMediaAccess()) {
@@ -625,7 +636,7 @@ public class AlbumSyncPlugin extends Plugin {
                 } catch (Exception ignored) {}
             }
         }
-        long sinceSec = call.getLong("sinceMs", 0L) / 1000L;
+        long sinceSec = optLongParam(call, "sinceMs", 0L) / 1000L;
         int limit = Math.max(1, Math.min(500, call.getInt("limit", 200)));
 
         getBridge().execute(() -> {
@@ -706,7 +717,7 @@ public class AlbumSyncPlugin extends Plugin {
 
     @PluginMethod
     public void getPhotoSha256(PluginCall call) {
-        long id = call.getLong("id", -1L);
+        long id = optLongParam(call, "id", -1L);
         String filePath = call.getString("path", "");
         if (id < 0 && (filePath == null || filePath.isEmpty())) {
             call.reject("无效的照片 ID");
@@ -740,9 +751,9 @@ public class AlbumSyncPlugin extends Plugin {
 
     @PluginMethod
     public void readPhotoChunk(PluginCall call) {
-        long id = call.getLong("id", -1L);
+        long id = optLongParam(call, "id", -1L);
         String filePath = call.getString("path", "");
-        long offset = call.getLong("offset", 0L);
+        long offset = optLongParam(call, "offset", 0L);
         int length = Math.max(1, Math.min(2 * 1024 * 1024, call.getInt("length", 1024 * 1024)));
         if (id < 0 && (filePath == null || filePath.isEmpty())) {
             call.reject("无效的照片 ID");
