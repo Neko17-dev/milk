@@ -3,8 +3,9 @@
 
     var GUARD_KEY = '__milkBackGuard';
     var lastHomeBackAt = 0;
-    var guardPushed = false;
+    var guardDepth = 0;
     var ignoringPop = false;
+    var nativeListenerBound = false;
 
     function isNativeApp() {
         try {
@@ -44,7 +45,7 @@
 
     function closeModalElement(el) {
         if (!el) return false;
-        // 优先走二级页面自带的「返回上级」按钮（如外观/聊天/高级设置 -> 设置）
+        // 优先走二级页面自带的「返回上级」按钮（如外观/聊天/高级/数据设置 -> 设置）
         var backBtn = el.querySelector('[id^="back-"], .modal-back-btn');
         if (backBtn && isVisible(backBtn)) {
             backBtn.click();
@@ -64,26 +65,40 @@
     }
 
     function closeTopLayer() {
-        // 1. 原生保活引导弹窗
+        // 1. 已知动态弹窗（保活引导、云端备份配置）
+        var cbOverlay = document.getElementById('cb-config-overlay');
+        if (cbOverlay && isVisible(cbOverlay)) {
+            var cbClose = cbOverlay.querySelector('#cb-close-btn');
+            if (cbClose) cbClose.click();
+            else cbOverlay.remove();
+            return true;
+        }
         var aka = document.getElementById('aka-overlay');
         if (aka && isVisible(aka)) {
-            aka.remove();
+            var akaClose = aka.querySelector('#aka-close-btn');
+            if (akaClose) akaClose.click();
+            else aka.remove();
             return true;
         }
 
-        // 2. 动态全屏浮层（图片预览、导出弹窗、云备份弹窗等）
+        // 2. 其他动态全屏浮层（图片预览、导出弹窗等，跳过常驻通话与引导遮罩）
         var bodyChildren = document.body ? Array.prototype.slice.call(document.body.children) : [];
         var dynamicFixed = [];
         for (var i = 0; i < bodyChildren.length; i++) {
             var child = bodyChildren[i];
             if (!child || child.nodeType !== 1) continue;
-            if (child.id === 'tour-overlay' || child.id === 'pwa-install-banner') continue;
-            if (child.classList && (child.classList.contains('modal') || child.classList.contains('notification') || child.classList.contains('toast'))) continue;
+            if (child.id === 'tour-overlay'
+                || child.id === 'pwa-install-banner'
+                || child.id === 'call-incoming-overlay'
+                || child.id === 'call-active-overlay'
+                || child.id === 'ti-settings-modal') continue;
+            if (child.classList && (child.classList.contains('modal')
+                || child.classList.contains('notification')
+                || child.classList.contains('toast'))) continue;
             try {
                 var cs = window.getComputedStyle(child);
                 var z = parseInt(cs.zIndex, 10) || 0;
-                if (cs.position === 'fixed' && z >= 9000 && isVisible(child)) {
-                    // 跳过纯提示 toast（通常高度很小且无交互按钮）
+                if (cs.position === 'fixed' && z >= 1000 && isVisible(child)) {
                     if (!child.querySelector('button, a, input, select, textarea, img')) continue;
                     dynamicFixed.push({ el: child, z: z, order: i });
                 }
@@ -92,7 +107,7 @@
         if (dynamicFixed.length > 0) {
             dynamicFixed.sort(function (a, b) { return (b.z - a.z) || (b.order - a.order); });
             var topDyn = dynamicFixed[0].el;
-            var dynClose = topDyn.querySelector('[data-close], .close-btn, .modal-close');
+            var dynClose = topDyn.querySelector('[data-close], .close-btn, .modal-close, [id^="close-"], [id^="cancel-"]');
             if (dynClose) {
                 dynClose.click();
             } else {
@@ -131,10 +146,9 @@
                     else sp.remove();
                     return true;
                 }
-                if (sp.classList.contains('active')) {
-                    sp.classList.remove('active');
-                }
-                var spClose = sp.querySelector('[id^="close-"], [id^="cancel-"], .close-btn, .modal-close');
+                if (sp.classList.contains('active')) sp.classList.remove('active');
+                if (sp.classList.contains('open')) sp.classList.remove('open');
+                var spClose = sp.querySelector('[id^="close-"], [id^="cancel-"], .close-btn, .modal-close, .ti-close-btn');
                 if (spClose) spClose.click();
                 else sp.style.display = 'none';
                 return true;
@@ -145,7 +159,7 @@
     }
 
     function hasAnyOpenLayer() {
-        if (document.getElementById('aka-overlay')) return true;
+        if (document.getElementById('cb-config-overlay') || document.getElementById('aka-overlay')) return true;
         var modals = document.querySelectorAll('.modal');
         for (var i = 0; i < modals.length; i++) {
             if (isVisible(modals[i])) return true;
@@ -158,15 +172,12 @@
         return false;
     }
 
-    function ensureHistoryGuard() {
+    function pushHistoryGuard(force) {
         if (isNativeApp()) return;
         try {
-            if (history.state && history.state[GUARD_KEY]) {
-                guardPushed = true;
-                return;
-            }
-            history.pushState({ __milkBackGuard: true, ts: Date.now() }, '');
-            guardPushed = true;
+            if (!force && guardDepth >= 1 && !hasAnyOpenLayer()) return;
+            guardDepth += 1;
+            history.pushState({ __milkBackGuard: true, depth: guardDepth, ts: Date.now() }, '');
         } catch (e) {}
     }
 
@@ -179,24 +190,25 @@
     function handleBackAction() {
         if (closeTopLayer()) {
             lastHomeBackAt = 0;
-            return true; // 已消费返回事件
+            return true;
         }
         var now = Date.now();
         if (now - lastHomeBackAt < 2000) {
             lastHomeBackAt = 0;
-            return false; // 放行退出
+            return false;
         }
         lastHomeBackAt = now;
         showExitToast();
         return true;
     }
 
-    // 原生 APK：接管 Capacitor App.backButton
+    // 原生 APK：接管 Capacitor App.backButton（幂等绑定）
     function setupNativeBack() {
-        if (!isNativeApp()) return;
+        if (!isNativeApp() || nativeListenerBound) return;
         try {
             var appPlugin = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
             if (!appPlugin || typeof appPlugin.addListener !== 'function') return;
+            nativeListenerBound = true;
             appPlugin.addListener('backButton', function () {
                 var handled = handleBackAction();
                 if (!handled && typeof appPlugin.exitApp === 'function') {
@@ -206,35 +218,35 @@
         } catch (e) {}
     }
 
-    // 网页 / PWA：通过 History API 哨兵状态拦截系统/手势返回
+    // 网页 / PWA：每次进入更深层级（有用户手势）都压入独立历史栈，连续返回不会直接退出
     function setupWebBack() {
         if (isNativeApp()) return;
 
-        // 首次加载及用户交互时补齐哨兵历史栈
-        ensureHistoryGuard();
+        pushHistoryGuard(true);
         document.addEventListener('click', function () {
-            if (!guardPushed || !(history.state && history.state[GUARD_KEY])) {
-                ensureHistoryGuard();
+            if (guardDepth < 1 || hasAnyOpenLayer()) {
+                pushHistoryGuard(true);
             }
-        }, { passive: true });
+        }, true);
 
-        // 包装 showModal：每次打开弹窗都确保有可退出的历史栈
         if (typeof window.showModal === 'function') {
             var origShowModal = window.showModal;
             window.showModal = function () {
-                ensureHistoryGuard();
+                pushHistoryGuard(true);
                 return origShowModal.apply(this, arguments);
             };
         }
 
         window.addEventListener('popstate', function () {
             if (ignoringPop) return;
-            guardPushed = false;
+            guardDepth = Math.max(0, guardDepth - 1);
             var handled = handleBackAction();
             if (handled) {
-                setTimeout(ensureHistoryGuard, 50);
+                // 仍在弹窗层级内或刚提示“再按一次退出”时，同步补回哨兵栈，防止连续返回直接退站
+                if (hasAnyOpenLayer() || guardDepth === 0) {
+                    pushHistoryGuard(true);
+                }
             } else {
-                // 二次确认退出：放行再退一步
                 ignoringPop = true;
                 try { history.back(); } catch (e) {}
                 setTimeout(function () { ignoringPop = false; }, 300);
@@ -252,10 +264,11 @@
     } else {
         init();
     }
+    window.addEventListener('load', setupNativeBack);
 
     window.MilkBackNav = {
         closeTopLayer: closeTopLayer,
         hasAnyOpenLayer: hasAnyOpenLayer,
-        ensureHistoryGuard: ensureHistoryGuard
+        pushHistoryGuard: pushHistoryGuard
     };
 })();
