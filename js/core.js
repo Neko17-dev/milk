@@ -1993,10 +1993,13 @@ function showModal(modalElement, focusElement = null) {
                 clearTimeout(modalElement._hideTimeout);
                 modalElement._hideTimeout = null;
             }
+            modalElement.style.transition = '';
+            modalElement.style.opacity = '1';
             modalElement.style.display = 'flex';
             requestAnimationFrame(() => {
                 const content = modalElement.querySelector('.modal-content');
                 if (content) {
+                    content.style.transition = 'opacity 0.2s ease, transform 0.2s ease';
                     content.style.opacity = '1';
                     content.style.transform = 'translateY(0) scale(1)';
                 }
@@ -2009,13 +2012,19 @@ function showModal(modalElement, focusElement = null) {
         function hideModal(modalElement) {
             const content = modalElement.querySelector('.modal-content');
             if (content) {
+                content.style.transition = 'opacity 0.18s ease, transform 0.18s ease';
                 content.style.opacity = '0';
-                content.style.transform = 'translateY(20px) scale(0.95)';
+                content.style.transform = 'translateY(12px) scale(0.97)';
             }
+            modalElement.style.transition = 'opacity 0.18s ease';
+            modalElement.style.opacity = '0';
             if (modalElement._hideTimeout) clearTimeout(modalElement._hideTimeout);
             modalElement._hideTimeout = setTimeout(() => {
+                modalElement._hideTimeout = null;
                 modalElement.style.display = 'none';
-            }, 300);
+                modalElement.style.opacity = '';
+                modalElement.style.transition = '';
+            }, 200);
         }
 
         function viewImage(src) {

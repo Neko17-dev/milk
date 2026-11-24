@@ -12,10 +12,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const hideWelcomeScreen = () => {
         if (!welcomeScreen) return;
         welcomeScreen.classList.add('hidden');
-        setTimeout(() => {
-            welcomeScreen.style.display = 'none';
-        }, 500);
+        welcomeScreen.style.display = 'none';
     };
+    hideWelcomeScreen();
 
     const safeAwait = async (promise, fallback = null) => {
         try {
@@ -79,10 +78,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         const tourSeen = await safeAwait(localforage?.getItem(APP_PREFIX + 'tour_seen'), false);
 
         updateLoader('连接成功，欢迎回来。', '100%');
-        setTimeout(hideWelcomeScreen, 1200);
+        hideWelcomeScreen();
 
         if (!tourSeen) {
-            setTimeout(() => startTour?.(), 1200 + 500);
+            setTimeout(() => startTour?.(), 300);
         }
 
         document.addEventListener('visibilitychange', () => {

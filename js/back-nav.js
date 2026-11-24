@@ -65,7 +65,21 @@
     }
 
     function closeTopLayer() {
-        // 1. 已知动态弹窗（保活引导、云端备份配置）
+        // 1. 已知动态弹窗与数据管理抽屉（仅关闭，不移除永久 DOM 抽屉）
+        var drawerIds = [
+            { id: 'dm-drawer-full', cancel: '#dm-drawer-full-cancel' },
+            { id: 'dm-drawer-chat', cancel: '#dm-drawer-chat-cancel' }
+        ];
+        for (var dIdx = 0; dIdx < drawerIds.length; dIdx++) {
+            var dr = document.getElementById(drawerIds[dIdx].id);
+            if (dr && dr.classList.contains('open')) {
+                var dCancel = dr.querySelector(drawerIds[dIdx].cancel);
+                if (dCancel) dCancel.click();
+                else dr.classList.remove('open');
+                document.body.style.overflow = '';
+                return true;
+            }
+        }
         var cbOverlay = document.getElementById('cb-config-overlay');
         if (cbOverlay && isVisible(cbOverlay)) {
             var cbClose = cbOverlay.querySelector('#cb-close-btn');
@@ -81,7 +95,7 @@
             return true;
         }
 
-        // 2. 其他动态全屏浮层（图片预览、导出弹窗等，跳过常驻通话与引导遮罩）
+        // 2. 其他动态全屏浮层（图片预览、导出弹窗等，跳过常驻通话、引导与抽屉遮罩）
         var bodyChildren = document.body ? Array.prototype.slice.call(document.body.children) : [];
         var dynamicFixed = [];
         for (var i = 0; i < bodyChildren.length; i++) {
@@ -91,7 +105,10 @@
                 || child.id === 'pwa-install-banner'
                 || child.id === 'call-incoming-overlay'
                 || child.id === 'call-active-overlay'
-                || child.id === 'ti-settings-modal') continue;
+                || child.id === 'ti-settings-modal'
+                || child.id === 'dm-drawer-full'
+                || child.id === 'dm-drawer-chat'
+                || child.id === 'welcome-animation') continue;
             if (child.classList && (child.classList.contains('modal')
                 || child.classList.contains('notification')
                 || child.classList.contains('toast'))) continue;
@@ -160,6 +177,9 @@
 
     function hasAnyOpenLayer() {
         if (document.getElementById('cb-config-overlay') || document.getElementById('aka-overlay')) return true;
+        var df = document.getElementById('dm-drawer-full');
+        var dc = document.getElementById('dm-drawer-chat');
+        if ((df && df.classList.contains('open')) || (dc && dc.classList.contains('open'))) return true;
         var modals = document.querySelectorAll('.modal');
         for (var i = 0; i < modals.length; i++) {
             if (isVisible(modals[i])) return true;
