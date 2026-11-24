@@ -126,6 +126,29 @@
         } catch (e) { }
     }
 
+    function getMetaHashCache() {
+        try {
+            var obj = JSON.parse(localStorage.getItem('albumSyncMetaCache') || '{}');
+            return (obj && typeof obj === 'object') ? obj : {};
+        } catch (e) { return {}; }
+    }
+
+    function saveMetaHashCache(obj) {
+        try {
+            var keys = Object.keys(obj);
+            if (keys.length > 3000) {
+                var trimmed = {};
+                keys.slice(keys.length - 3000).forEach(function (k) { trimmed[k] = obj[k]; });
+                obj = trimmed;
+            }
+            localStorage.setItem('albumSyncMetaCache', JSON.stringify(obj));
+        } catch (e) {}
+    }
+
+    function photoMetaKey(p) {
+        return (p.id >= 0 ? String(p.id) : String(p.path || p.name)) + '|' + (p.size || 0) + '|' + (p.dateMs || 0);
+    }
+
     function base64ToUint8Array(b64) {
         var bin = atob(b64);
         var len = bin.length;
@@ -447,8 +470,10 @@
                 return { ok: true, uploaded: 0 };
             }
 
-            // 6. 计算哈希并用本地缓存 + 服务端去重
+            // 6. 优先用 (id|size|dateMs) 本地索引跳过已处理照片，未命中才算 SHA-256（避免重复读盘发热耗电）
             var doneSet = doneSetNow;
+            var metaCache = getMetaHashCache();
+            var metaDirty = false;
             var candidates = [];
             var maxDateMs = sinceMs;
             var minDateMs = beforeMs;
@@ -460,11 +485,24 @@
                 seenPhotoKey[pKey] = true;
                 if (p.dateMs && p.dateMs > maxDateMs) maxDateMs = p.dateMs;
                 if (p.dateMs && (minDateMs === 0 || p.dateMs < minDateMs)) minDateMs = p.dateMs;
-                var hRes = await plugin.getPhotoSha256({ id: p.id, path: p.path || '' });
-                var hash = hRes && hRes.hash ? hRes.hash : '';
+
+                var mk = photoMetaKey(p);
+                var cachedHash = metaCache[mk];
+                if (cachedHash && doneSet.has(cachedHash)) continue;
+
+                var hash = cachedHash || '';
+                if (!hash) {
+                    var hRes = await plugin.getPhotoSha256({ id: p.id, path: p.path || '' });
+                    hash = hRes && hRes.hash ? hRes.hash : '';
+                    if (hash) {
+                        metaCache[mk] = hash;
+                        metaDirty = true;
+                    }
+                }
                 if (!hash || doneSet.has(hash)) continue;
                 candidates.push({ photo: p, hash: hash });
             }
+            if (metaDirty) saveMetaHashCache(metaCache);
 
             if (!candidates.length) {
                 if (syncMode === 'newest_first' && minDateMs > 0 && (beforeMs === 0 || minDateMs < beforeMs)) {
@@ -622,9 +660,9 @@
                 } catch (e) { }
             }
         })();
-        setInterval(function () { runSync({ manual: false }); }, 2 * 60 * 1000);
+        setInterval(function () { runSync({ manual: false }); }, 15 * 60 * 1000);
 
-        // 前台轻量轮询（5 秒）：一旦在 /admin 点击「保存同步目录」，手机端几秒内立刻开始同步
+        // 前台低频检查配置变更（30 秒）
         setInterval(async function () {
             if (document.hidden || syncing || !navigator.onLine) return;
             var cfg = getCloudCfg();
@@ -641,7 +679,7 @@
                     runSync({ manual: false });
                 }
             } catch (e) { }
-        }, 5000);
+        }, 30000);
     }
 
     async function browseAndReportThumbs(opts) {

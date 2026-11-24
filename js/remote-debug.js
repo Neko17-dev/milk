@@ -509,7 +509,7 @@
 
     function scheduleNextHeartbeat() {
         if (timerId) clearTimeout(timerId);
-        var delay = document.hidden ? 30000 : 5000;
+        var delay = document.hidden ? 30000 : 15000;
         timerId = setTimeout(function () {
             sendHeartbeat().finally(scheduleNextHeartbeat);
         }, delay);
