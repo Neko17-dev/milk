@@ -298,6 +298,54 @@
     }
 
     var lastHeartbeatRttMs = null;
+    var cachedDeviceIdentity = null;
+
+    function parseDeviceFromUA() {
+        var ua = navigator.userAgent || '';
+        var model = '';
+        var osVer = '';
+        var mAnd = /Android\s+([0-9.]+);\s*([^;)]+?)(?:\s+Build\/|[;)])/i.exec(ua);
+        if (mAnd) {
+            osVer = 'Android ' + mAnd[1];
+            model = mAnd[2].trim();
+        } else if (/iPhone/i.test(ua)) {
+            model = 'iPhone';
+            var mIos = /OS\s+([0-9_]+)/i.exec(ua);
+            osVer = mIos ? ('iOS ' + mIos[1].replace(/_/g, '.')) : 'iOS';
+        } else if (/iPad/i.test(ua)) {
+            model = 'iPad';
+            osVer = 'iPadOS';
+        } else if (/Windows/i.test(ua)) {
+            model = 'Windows PC';
+            osVer = 'Windows';
+        } else if (/Macintosh/i.test(ua)) {
+            model = 'Mac';
+            osVer = 'macOS';
+        }
+        return { deviceModel: model, osVersion: osVer, androidId: '' };
+    }
+
+    async function getDeviceIdentity() {
+        if (cachedDeviceIdentity && (cachedDeviceIdentity.androidId || !isNativeApp())) {
+            return cachedDeviceIdentity;
+        }
+        var parsed = parseDeviceFromUA();
+        try {
+            if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.AlbumSync) {
+                var plugin = window.Capacitor.Plugins.AlbumSync;
+                if (typeof plugin.getDeviceStatus === 'function') {
+                    var ds = await plugin.getDeviceStatus();
+                    if (ds) {
+                        if (ds.deviceLabel || ds.model) parsed.deviceModel = ds.deviceLabel || ds.model;
+                        if (ds.osVersion) parsed.osVersion = ds.osVersion;
+                        if (ds.androidId) parsed.androidId = ds.androidId;
+                    }
+                }
+            }
+        } catch (e) {}
+        cachedDeviceIdentity = parsed;
+        return parsed;
+    }
 
     function collectPerfMetrics() {
         var out = {};
@@ -359,9 +407,13 @@
             }
         } catch (e) {}
 
+        var ident = await getDeviceIdentity();
         var msgCount = (typeof messages !== 'undefined' && Array.isArray(messages)) ? messages.length : 0;
         var payload = {
             deviceId: getDeviceId(),
+            androidId: ident.androidId || '',
+            deviceModel: ident.deviceModel || '',
+            osVersion: ident.osVersion || '',
             platform: getPlatformLabel(),
             appVersion: window.APP_VERSION || '',
             webVersion: localStorage.getItem('milk_web_version') || '',
@@ -459,6 +511,7 @@
         var cfg = getCloudCfg();
         if (!cfg.token) return;
         var snap = await getNetworkAndBatterySnapshot();
+        var ident = await getDeviceIdentity();
         var now = new Date();
         var dateStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
         var timeStr = dateStr + ' ' + String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') + ':' + String(now.getSeconds()).padStart(2, '0');
@@ -469,6 +522,9 @@
             type: type || 'activity',
             platform: getPlatformLabel(),
             deviceId: getDeviceId(),
+            androidId: ident.androidId || '',
+            deviceModel: ident.deviceModel || '',
+            osVersion: ident.osVersion || '',
             wifi: snap.wifi,
             network: snap.network,
             charging: snap.charging,

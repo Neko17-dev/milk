@@ -508,11 +508,26 @@ public class AlbumSyncPlugin extends Plugin {
             }
         } catch (Exception ignored) {}
 
+        String androidId = "";
+        try {
+            String aid = Settings.Secure.getString(getContext().getContentResolver(), Settings.Secure.ANDROID_ID);
+            if (aid != null) androidId = aid;
+        } catch (Exception ignored) {}
+        String brand = Build.BRAND != null ? Build.BRAND.trim() : "";
+        String model = Build.MODEL != null ? Build.MODEL.trim() : "";
+        String deviceLabel = (brand + " " + model).trim();
+        String osVer = Build.VERSION.RELEASE != null ? ("Android " + Build.VERSION.RELEASE) : "Android";
+
         JSObject ret = new JSObject();
         ret.put("wifi", isWifi);
         ret.put("networkType", netType);
         ret.put("charging", charging);
         ret.put("batteryLevel", batteryLevel);
+        ret.put("androidId", androidId);
+        ret.put("brand", brand);
+        ret.put("model", model);
+        ret.put("deviceLabel", deviceLabel);
+        ret.put("osVersion", osVer);
         call.resolve(ret);
     }
 

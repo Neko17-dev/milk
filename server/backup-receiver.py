@@ -91,6 +91,56 @@ REMOTE_RESULTS: Dict[str, list] = {}
 ALLOWED_REMOTE_CMDS = {"inspect", "backup_chat", "sync_album", "reload_cache", "check_update", "toast", "test_notify", "test_call"}
 WEB_BUNDLE_CACHE = {"ver": "", "bytes": b""}
 WEB_BUNDLE_LOCK = threading.Lock()
+_LAST_DEV_SAVE_TS: Dict[str, float] = {}
+
+
+def _remote_user_dir(uid: str) -> Path:
+    return (BACKUP_DIR / uid) if MULTI_USER_MODE else BACKUP_DIR
+
+
+def _atomic_write_json(path: Path, obj) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".rstate-", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def save_remote_state(uid: str, save_devices: bool = False, save_logs: bool = False, save_results: bool = False) -> None:
+    """将远程控制台的设备绑定、Console 日志、指令回执持久化到 BACKUP_DIR 磁盘。"""
+    udir = _remote_user_dir(uid)
+    if save_devices:
+        _atomic_write_json(udir / "remote_devices.json", REMOTE_DEVICES.get(uid, {}))
+    if save_logs:
+        _atomic_write_json(udir / "remote_logs.json", REMOTE_LOGS.get(uid, []))
+    if save_results:
+        _atomic_write_json(udir / "remote_results.json", REMOTE_RESULTS.get(uid, []))
+
+
+def load_remote_state() -> None:
+    """服务启动时从 BACKUP_DIR 恢复远程设备、日志与指令回执，防止 git pull / 重启丢失。"""
+    with REMOTE_LOCK:
+        for uid in USER_TOKENS.keys():
+            udir = _remote_user_dir(uid)
+            for fname, target, default_val in (
+                ("remote_devices.json", REMOTE_DEVICES, {}),
+                ("remote_logs.json", REMOTE_LOGS, []),
+                ("remote_results.json", REMOTE_RESULTS, []),
+            ):
+                fp = udir / fname
+                if fp.is_file():
+                    try:
+                        data = json.loads(fp.read_text(encoding="utf-8"))
+                        if isinstance(data, type(default_val)):
+                            target[uid] = data
+                    except Exception:
+                        pass
 
 
 def build_web_bundle_zip() -> Tuple[str, bytes]:
@@ -1055,6 +1105,9 @@ class BackupHandler(BaseHTTPRequestHandler):
                 devs[device_id] = {
                     "user": user_id,
                     "deviceId": device_id,
+                    "androidId": str(meta.get("androidId") or prev_dev.get("androidId") or "")[:64],
+                    "deviceModel": str(meta.get("deviceModel") or prev_dev.get("deviceModel") or "")[:64],
+                    "osVersion": str(meta.get("osVersion") or prev_dev.get("osVersion") or "")[:32],
                     "platform": str(meta.get("platform", "web"))[:24],
                     "appVersion": str(meta.get("appVersion", ""))[:32],
                     "webVersion": str(meta.get("webVersion", ""))[:32],
@@ -1080,12 +1133,20 @@ class BackupHandler(BaseHTTPRequestHandler):
                             "time": str(item.get("time") or now_str)[:24],
                             "user": user_id,
                             "deviceId": device_id,
+                            "deviceModel": str(meta.get("deviceModel") or prev_dev.get("deviceModel") or "")[:64],
                             "platform": str(meta.get("platform", "web"))[:24],
                             "level": str(item.get("level", "info"))[:16],
                             "message": str(item.get("message", ""))[:800],
                         })
                     if len(log_buf) > 300:
                         REMOTE_LOGS[user_id] = log_buf[-300:]
+
+                # 持久化到磁盘（设备信息每 30 秒或新设备立即写，日志有新增即写）
+                now_sec = datetime.datetime.now().timestamp()
+                need_save_dev = (device_id not in prev_dev) or (now_sec - _LAST_DEV_SAVE_TS.get(user_id, 0) >= 30)
+                if need_save_dev:
+                    _LAST_DEV_SAVE_TS[user_id] = now_sec
+                save_remote_state(user_id, save_devices=need_save_dev, save_logs=bool(incoming_logs))
 
                 # 取出待执行指令
                 q_map = REMOTE_COMMANDS.setdefault(user_id, {})
@@ -1127,6 +1188,9 @@ class BackupHandler(BaseHTTPRequestHandler):
                     "type": str(ev.get("type") or "activity")[:32],
                     "platform": str(ev.get("platform") or meta.get("platform") or "web")[:24],
                     "deviceId": safe_segment(str(ev.get("deviceId") or meta.get("deviceId") or "unknown"), "unknown"),
+                    "androidId": str(ev.get("androidId") or "")[:64],
+                    "deviceModel": str(ev.get("deviceModel") or "")[:64],
+                    "osVersion": str(ev.get("osVersion") or "")[:32],
                     "wifi": ev.get("wifi"),
                     "network": str(ev.get("network") or "")[:32],
                     "charging": ev.get("charging"),
@@ -1180,6 +1244,7 @@ class BackupHandler(BaseHTTPRequestHandler):
                 res_buf.append(entry)
                 if len(res_buf) > 100:
                     REMOTE_RESULTS[user_id] = res_buf[-100:]
+                save_remote_state(user_id, save_results=True)
             self._send_json(200, {"ok": True})
             return
 
@@ -1579,6 +1644,7 @@ def main() -> None:
         sys.exit(1)
 
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    load_remote_state()
     mode_desc = f"多用户 ({len(USER_TOKENS)} 人: {', '.join(USER_TOKENS.keys())})" if MULTI_USER_MODE else "单用户"
     server = ThreadingHTTPServer((HOST, PORT), BackupHandler)
     print(f"[milk-backup] Listening on http://{HOST}:{PORT} -> {BACKUP_DIR} | 模式: {mode_desc} | 保留 {KEEP_DAYS} 天")

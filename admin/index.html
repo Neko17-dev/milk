@@ -1342,12 +1342,14 @@
                         }).join(', ');
                         slowLine = '<div class="item-sub" style="color:#f59e0b;">慢资源: ' + slowText + '</div>';
                     }
+                    var modelBadge = d.deviceModel ? (d.deviceModel + (d.osVersion ? (' · ' + d.osVersion) : '')) : '';
+                    var aidTag = d.androidId ? (' · 绑定ID: ' + d.androidId) : '';
                     card.innerHTML = ''
                         + '<div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:600">'
-                        +   '<span><span class="' + (d.online ? 'dot-on' : 'dot-off') + '"></span>' + d.user + ' · ' + d.platform + '</span>'
+                        +   '<span><span class="' + (d.online ? 'dot-on' : 'dot-off') + '"></span>' + d.user + ' · ' + d.platform + (modelBadge ? (' (' + modelBadge + ')') : '') + '</span>'
                         +   '<span class="item-sub">' + verTag + '</span>'
                         + '</div>'
-                        + '<div class="item-sub">ID: ' + d.deviceId + ' · 消息 ' + d.msgCount + ' 条' + wifiTag + '</div>'
+                        + '<div class="item-sub">ID: ' + d.deviceId + aidTag + ' · 消息 ' + d.msgCount + ' 条' + wifiTag + '</div>'
                         + '<div class="item-sub">最近心跳: ' + (d.lastSeenTime || '-') + ' · IP: ' + (d.ip || '-') + '</div>'
                         + perfLine
                         + slowLine;
@@ -1510,7 +1512,7 @@
                 card.innerHTML = ''
                     + '<div class="log-head">'
                     +   '<span class="log-lv INFO">' + (ev.type || 'activity') + '</span>'
-                    +   '<span>' + (ev.time || '') + ' · ' + (ev.platform || '') + ' (' + (ev.deviceId || '') + ') · IP: ' + (ev.ip || '-') + '</span>'
+                    +   '<span>' + (ev.time || '') + ' · ' + (ev.platform || '') + (ev.deviceModel ? (' [' + ev.deviceModel + ']') : '') + ' (' + (ev.deviceId || '') + (ev.androidId ? (' / ' + ev.androidId.slice(0, 8)) : '') + ') · IP: ' + (ev.ip || '-') + '</span>'
                     + '</div>'
                     + '<div style="font-size:13px;margin:2px 0"></div>'
                     + '<div class="log-detail">网络: ' + netStr + ' · Wi-Fi: ' + wifiStr + ' · 充电: ' + chargeStr + ' · 电量: ' + batStr + ' · 状态: ' + (ev.hidden ? '后台' : '前台') + '</div>';
