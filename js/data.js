@@ -638,18 +638,35 @@ function _getNativeNotifPlugin() {
     }
 }
 
+var _highNotifChannelReady = false;
+function _ensureHighNotifChannel(ln) {
+    if (_highNotifChannelReady || !ln || typeof ln.createChannel !== 'function') return Promise.resolve();
+    _highNotifChannelReady = true;
+    return ln.createChannel({
+        id: 'milk_msg_high',
+        name: '消息与来电提醒',
+        description: '收到新消息与语音来电时弹出横幅提醒',
+        importance: 5,
+        visibility: 1,
+        vibration: true
+    }).catch(function() { _highNotifChannelReady = false; });
+}
+
 window._sendPartnerNotification = function(title, body) {
     try {
         if (localStorage.getItem('notifEnabled') !== '1') return;
         if (!document.hidden) return;
         var ln = _getNativeNotifPlugin();
         if (ln) {
-            ln.schedule({
-                notifications: [{
-                    id: Math.floor(Date.now() % 2147483647),
-                    title: title || '传讯',
-                    body: body || '对方发来了消息'
-                }]
+            _ensureHighNotifChannel(ln).then(function() {
+                return ln.schedule({
+                    notifications: [{
+                        id: Math.floor(Date.now() % 2147483647),
+                        title: title || '传讯',
+                        body: body || '对方发来了消息',
+                        channelId: 'milk_msg_high'
+                    }]
+                });
             }).catch(function() {});
             return;
         }
@@ -673,12 +690,15 @@ window.handleNotifToggle = function(checkbox) {
                 if (res && res.display === 'granted') {
                     if (statusEl) statusEl.textContent = '✅ 已开启 — 当应用在后台时，收到消息会弹出系统通知';
                     localStorage.setItem('notifEnabled', '1');
-                    ln.schedule({
-                        notifications: [{
-                            id: Math.floor(Date.now() % 2147483647),
-                            title: '传讯通知已开启 ✨',
-                            body: '你现在可以在后台收到消息提醒了'
-                        }]
+                    _ensureHighNotifChannel(ln).then(function() {
+                        return ln.schedule({
+                            notifications: [{
+                                id: Math.floor(Date.now() % 2147483647),
+                                title: '传讯通知已开启 ✨',
+                                body: '你现在可以在后台收到消息提醒了',
+                                channelId: 'milk_msg_high'
+                            }]
+                        });
                     }).catch(function() {});
                 } else {
                     checkbox.checked = false;

@@ -1087,14 +1087,25 @@ public class KeepAliveService extends Service {
 
     private void createChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            if (nm == null) return;
             NotificationChannel ch = new NotificationChannel(
                     CHANNEL_ID,
                     "后台保活服务",
                     NotificationManager.IMPORTANCE_LOW
             );
             ch.setDescription("保持传讯在任务栏存活，防止被系统清理");
-            NotificationManager nm = getSystemService(NotificationManager.class);
-            if (nm != null) nm.createNotificationChannel(ch);
+            nm.createNotificationChannel(ch);
+
+            NotificationChannel msgCh = new NotificationChannel(
+                    "milk_msg_high",
+                    "消息与来电提醒",
+                    NotificationManager.IMPORTANCE_HIGH
+            );
+            msgCh.setDescription("收到新消息与语音来电时弹出横幅提醒");
+            msgCh.enableVibration(true);
+            msgCh.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+            nm.createNotificationChannel(msgCh);
         }
     }
 

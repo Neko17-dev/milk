@@ -194,11 +194,22 @@
                 var ln = (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.LocalNotifications) || null;
                 if (ln && typeof ln.schedule === 'function') {
                     var permRes = (typeof ln.checkPermissions === 'function') ? await ln.checkPermissions() : null;
+                    if (typeof ln.createChannel === 'function') {
+                        await ln.createChannel({
+                            id: 'milk_msg_high',
+                            name: '消息与来电提醒',
+                            description: '收到新消息与语音来电时弹出横幅提醒',
+                            importance: 5,
+                            visibility: 1,
+                            vibration: true
+                        }).catch(function () {});
+                    }
                     await ln.schedule({
                         notifications: [{
                             id: Math.floor(Date.now() % 2147483647),
                             title: nTitle,
-                            body: nBody
+                            body: nBody,
+                            channelId: 'milk_msg_high'
                         }]
                     });
                     result = {
@@ -236,11 +247,22 @@
                 var lnCall = (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.LocalNotifications) || null;
                 if (document.hidden) {
                     if (lnCall && typeof lnCall.schedule === 'function') {
+                        if (typeof lnCall.createChannel === 'function') {
+                            await lnCall.createChannel({
+                                id: 'milk_msg_high',
+                                name: '消息与来电提醒',
+                                description: '收到新消息与语音来电时弹出横幅提醒',
+                                importance: 5,
+                                visibility: 1,
+                                vibration: true
+                            }).catch(function () {});
+                        }
                         await lnCall.schedule({
                             notifications: [{
                                 id: Math.floor(Date.now() % 2147483647),
                                 title: '📞 ' + partnerName + ' 向你发起语音通话',
-                                body: '点击接听来电（后台测试推送）'
+                                body: '点击接听来电（后台测试推送）',
+                                channelId: 'milk_msg_high'
                             }]
                         });
                     } else if ('Notification' in window && Notification.permission === 'granted') {
