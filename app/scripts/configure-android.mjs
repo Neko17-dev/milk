@@ -79,7 +79,8 @@ const requiredPerms = [
   '<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />',
   '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />',
   '<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />',
-  '<uses-permission android:name="android.permission.WAKE_LOCK" />'
+  '<uses-permission android:name="android.permission.WAKE_LOCK" />',
+  '<uses-permission android:name="android.permission.VIBRATE" />'
 ];
 for (const perm of requiredPerms) {
   const nameMatch = /android:name="([^"]+)"/.exec(perm);
@@ -285,7 +286,15 @@ public class AlbumSyncPlugin extends Plugin {
 
     @PluginMethod
     public void requestAllStartupPermissions(PluginCall call) {
-        requestPermission(call);
+        if (hasMediaAccess() && hasNotificationAccess()) {
+            JSObject ret = new JSObject();
+            ret.put("granted", true);
+            ret.put("media", true);
+            ret.put("notification", true);
+            call.resolve(ret);
+            return;
+        }
+        requestPermissionForAlias(startupAlias(), call, "permCallback");
     }
 
     private boolean hasNotificationAccess() {
