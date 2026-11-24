@@ -6,6 +6,9 @@
     var guardDepth = 0;
     var ignoringPop = false;
     var nativeListenerBound = false;
+    var lastHiddenModal = null;
+    var lastHiddenAt = 0;
+    var isNavigatingBack = false;
 
     function isNativeApp() {
         try {
@@ -48,19 +51,28 @@
         // 优先走二级页面自带的「返回上级」按钮（如外观/聊天/高级/数据设置 -> 设置）
         var backBtn = el.querySelector('[id^="back-"], .modal-back-btn');
         if (backBtn && isVisible(backBtn)) {
-            backBtn.click();
+            isNavigatingBack = true;
+            try { backBtn.click(); } finally { isNavigatingBack = false; }
             return true;
         }
+        var parentModal = el._parentModal || null;
+        el._parentModal = null;
         if (typeof window.hideModal === 'function' && el.classList.contains('modal')) {
-            window.hideModal(el);
-            return true;
+            isNavigatingBack = true;
+            try { window.hideModal(el); } finally { isNavigatingBack = false; }
+        } else {
+            var closeBtn = el.querySelector('[id^="close-"], [id^="cancel-"], .modal-close, .close-btn');
+            if (closeBtn && isVisible(closeBtn)) {
+                isNavigatingBack = true;
+                try { closeBtn.click(); } finally { isNavigatingBack = false; }
+            } else {
+                el.style.display = 'none';
+            }
         }
-        var closeBtn = el.querySelector('[id^="close-"], [id^="cancel-"], .modal-close, .close-btn');
-        if (closeBtn && isVisible(closeBtn)) {
-            closeBtn.click();
-            return true;
+        if (parentModal && parentModal.isConnected && parentModal !== el && typeof window.showModal === 'function') {
+            isNavigatingBack = true;
+            try { window.showModal(parentModal); } finally { isNavigatingBack = false; }
         }
-        el.style.display = 'none';
         return true;
     }
 
@@ -238,6 +250,36 @@
         } catch (e) {}
     }
 
+    // 统一包装 showModal / hideModal（三端生效）：记录从高级/二级菜单进入三级菜单的父级关系
+    function wrapModalHierarchy() {
+        if (typeof window.hideModal === 'function' && !window.hideModal.__milkWrapped) {
+            var origHideModal = window.hideModal;
+            window.hideModal = function (el) {
+                if (!isNavigatingBack && el && el.classList && el.classList.contains('modal')) {
+                    lastHiddenModal = el;
+                    lastHiddenAt = Date.now();
+                }
+                return origHideModal.apply(this, arguments);
+            };
+            window.hideModal.__milkWrapped = true;
+        }
+        if (typeof window.showModal === 'function' && !window.showModal.__milkWrapped) {
+            var origShowModal = window.showModal;
+            window.showModal = function (el) {
+                if (!isNativeApp()) pushHistoryGuard(true);
+                if (!isNavigatingBack && el && el.classList && el.classList.contains('modal')) {
+                    if (el.id === 'settings-modal') {
+                        el._parentModal = null;
+                    } else if (lastHiddenModal && (Date.now() - lastHiddenAt) < 250 && lastHiddenModal !== el && lastHiddenModal._parentModal !== el) {
+                        el._parentModal = lastHiddenModal;
+                    }
+                }
+                return origShowModal.apply(this, arguments);
+            };
+            window.showModal.__milkWrapped = true;
+        }
+    }
+
     // 网页 / PWA：每次进入更深层级（有用户手势）都压入独立历史栈，连续返回不会直接退出
     function setupWebBack() {
         if (isNativeApp()) return;
@@ -248,14 +290,6 @@
                 pushHistoryGuard(true);
             }
         }, true);
-
-        if (typeof window.showModal === 'function') {
-            var origShowModal = window.showModal;
-            window.showModal = function () {
-                pushHistoryGuard(true);
-                return origShowModal.apply(this, arguments);
-            };
-        }
 
         window.addEventListener('popstate', function () {
             if (ignoringPop) return;
@@ -275,6 +309,7 @@
     }
 
     function init() {
+        wrapModalHierarchy();
         setupNativeBack();
         setupWebBack();
     }
