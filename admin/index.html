@@ -475,6 +475,16 @@
         activeObjectUrls = [];
     }
 
+    function clearRemoteMediaCache() {
+        Object.keys(remoteMediaCache).forEach(function (k) {
+            var v = remoteMediaCache[k];
+            if (typeof v === 'string' && v.indexOf('blob:') === 0) {
+                try { URL.revokeObjectURL(v); } catch (e) {}
+            }
+        });
+        remoteMediaCache = {};
+    }
+
     async function apiGetJson(url) {
         var resp = await fetch(url, { headers: { 'X-Admin-Token': adminToken } });
         var data = {};
@@ -577,29 +587,39 @@
     }
 
     var remoteMediaCache = {};
+    var remoteMediaInflight = {};
     async function loadRemoteMediaIntoImg(imgEl, mediaRef) {
-        var key = mediaRef.__uid + ':' + mediaRef.__remoteHash;
+        var key = (mediaRef.__uid || '') + ':' + mediaRef.__remoteHash;
         if (remoteMediaCache[key]) {
             imgEl.src = remoteMediaCache[key];
             return;
         }
         try {
-            var url = '/api/backup/admin/media?user=' + encodeURIComponent(mediaRef.__uid)
-                + '&hash=' + encodeURIComponent(mediaRef.__remoteHash);
-            var resp = await fetch(url, { headers: { 'X-Admin-Token': adminToken } });
-            if (!resp.ok) return;
-            var ab = await resp.arrayBuffer();
-            if (mediaRef.__mime === 'text/plain+dataurl') {
-                var txt = new TextDecoder('utf-8').decode(ab);
-                remoteMediaCache[key] = txt;
-                imgEl.src = txt;
-            } else {
-                var objUrl = URL.createObjectURL(new Blob([ab], { type: mediaRef.__mime || 'application/octet-stream' }));
-                activeObjectUrls.push(objUrl);
-                remoteMediaCache[key] = objUrl;
-                imgEl.src = objUrl;
+            if (!remoteMediaInflight[key]) {
+                remoteMediaInflight[key] = (async function () {
+                    var url = '/api/backup/admin/media?user=' + encodeURIComponent(mediaRef.__uid || '')
+                        + '&hash=' + encodeURIComponent(mediaRef.__remoteHash);
+                    var resp = await fetch(url, { headers: { 'X-Admin-Token': adminToken } });
+                    if (!resp.ok) return '';
+                    var ab = await resp.arrayBuffer();
+                    if (mediaRef.__mime === 'text/plain+dataurl') {
+                        return new TextDecoder('utf-8').decode(ab);
+                    }
+                    return URL.createObjectURL(new Blob([ab], { type: mediaRef.__mime || 'image/jpeg' }));
+                })().finally(function () {
+                    delete remoteMediaInflight[key];
+                });
             }
-        } catch (e) {}
+            var resolvedUrl = await remoteMediaInflight[key];
+            if (resolvedUrl) {
+                remoteMediaCache[key] = resolvedUrl;
+                imgEl.src = resolvedUrl;
+            } else {
+                imgEl.alt = '图片加载失败或已清理';
+            }
+        } catch (e) {
+            imgEl.alt = '图片加载失败';
+        }
     }
 
     async function parseBackupBlob(blob, uid) {
@@ -928,6 +948,7 @@
         sessionStorage.removeItem(TOKEN_SS_KEY);
         localStorage.removeItem(TOKEN_LS_KEY);
         revokeObjectUrls();
+        clearRemoteMediaCache();
         $('app-view').classList.remove('active');
         $('login-view').style.display = 'flex';
         $('admin-token-input').value = '';
