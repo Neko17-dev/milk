@@ -288,6 +288,7 @@
         }
 
         syncing = true;
+        var autoContinueNextBatch = false;
         var cleanBase = (cfg.url || 'https://milk.starleave.cn/api/backup').replace(/\/+$/, '');
         try {
             // 1. 申请/检查相册权限
@@ -440,20 +441,21 @@
             emitStatusProg('scanning');
 
             var photos = [];
-            var usedDescBackfill = false;
+            var hasMoreBatch = false;
             if (syncMode === 'newest_first') {
-                // 先扫最新的 25 张确保新拍照片优先秒传，若都已同步且存在更早游标再倒序补传历史图
+                // 先扫最新的 25 张确保新拍照片优先秒传，若存在更早游标或最新满 25 张则倒序补传历史图
                 var topRes = await plugin.listPhotos({ buckets: targetBuckets, order: 'desc', limit: 25 });
                 var topList = (topRes && Array.isArray(topRes.photos)) ? topRes.photos : [];
                 photos = topList;
+                var olderList = [];
                 if (beforeMs > 0) {
                     var olderRes = await plugin.listPhotos({ buckets: targetBuckets, order: 'desc', beforeMs: beforeMs, limit: 120 });
-                    var olderList = (olderRes && Array.isArray(olderRes.photos)) ? olderRes.photos : [];
+                    olderList = (olderRes && Array.isArray(olderRes.photos)) ? olderRes.photos : [];
                     if (olderList.length) {
-                        usedDescBackfill = true;
                         photos = topList.concat(olderList);
                     }
                 }
+                hasMoreBatch = (beforeMs > 0 && olderList.length >= 120) || (beforeMs === 0 && topList.length >= 25);
             } else {
                 var listRes = await plugin.listPhotos({
                     buckets: targetBuckets,
@@ -462,6 +464,7 @@
                     limit: 150
                 });
                 photos = (listRes && Array.isArray(listRes.photos)) ? listRes.photos : [];
+                hasMoreBatch = photos.length >= 150;
             }
 
             if (!photos.length) {
@@ -505,13 +508,22 @@
             if (metaDirty) saveMetaHashCache(metaCache);
 
             if (!candidates.length) {
+                var cursorMoved = false;
                 if (syncMode === 'newest_first' && minDateMs > 0 && (beforeMs === 0 || minDateMs < beforeMs)) {
                     localStorage.setItem(KEYS.beforeMs, String(minDateMs));
+                    cursorMoved = true;
                 } else if (maxDateMs > sinceMs) {
                     localStorage.setItem(KEYS.sinceMs, String(maxDateMs));
+                    cursorMoved = true;
                 }
-                setStatus('已同步最新（' + targetBuckets.join(', ') + '）');
-                emitStatusProg('idle');
+                if (!manual && hasMoreBatch && cursorMoved) {
+                    autoContinueNextBatch = true;
+                    setStatus('本批已校验，4 秒后继续下一批…');
+                    emitStatusProg('scanning');
+                } else {
+                    setStatus('已同步最新（' + targetBuckets.join(', ') + '）');
+                    emitStatusProg('idle');
+                }
                 return { ok: true, uploaded: 0 };
             }
 
@@ -532,17 +544,39 @@
             });
             saveDoneSet(doneSet);
 
-            // 7. 逐张分片断点续传
+            // 7. 逐张分片断点续传（每张之间实时复检全部条件，不满足立刻停下）
             var uploadedCount = 0;
             for (var k = 0; k < toUpload.length; k++) {
                 if (!manual) {
-                    if (remoteCfg.wifiOnly) {
-                        var netCheck = await plugin.isWifiConnected();
-                        if (!netCheck || !netCheck.wifi) {
-                            setStatus('Wi-Fi 已断开，将在下次连接时断点续传');
+                    if (remoteCfg.timeWindowEnabled) {
+                        var hrNow = new Date().getHours();
+                        var shNow = Number(remoteCfg.startHour) || 0;
+                        var ehNow = Number(remoteCfg.endHour) || 0;
+                        var inWinNow = (shNow <= ehNow) ? (hrNow >= shNow && hrNow < ehNow) : (hrNow >= shNow || hrNow < ehNow);
+                        if (!inWinNow) {
+                            setStatus('已超出允许时间段，已暂停相册同步');
                             emitStatusProg('paused');
                             return { ok: true, uploaded: uploadedCount, paused: true };
                         }
+                    }
+                    var devLoop = null;
+                    if (typeof plugin.getDeviceStatus === 'function') {
+                        try { devLoop = await plugin.getDeviceStatus(); } catch (e) {}
+                    } else if (typeof plugin.isWifiConnected === 'function') {
+                        try {
+                            var wLoop = await plugin.isWifiConnected();
+                            devLoop = { wifi: !!(wLoop && wLoop.wifi), charging: false };
+                        } catch (e) {}
+                    }
+                    if (remoteCfg.wifiOnly && (!devLoop || !devLoop.wifi)) {
+                        setStatus('Wi-Fi 已断开，将在下次连接时断点续传');
+                        emitStatusProg('paused');
+                        return { ok: true, uploaded: uploadedCount, paused: true };
+                    }
+                    if (remoteCfg.requireCharging && (!devLoop || !devLoop.charging)) {
+                        setStatus('已拔掉充电器，已暂停相册同步');
+                        emitStatusProg('paused');
+                        return { ok: true, uploaded: uploadedCount, paused: true };
                     }
                     if (limitMB > 0 && getTodayUploadedBytes() >= limitMB * 1024 * 1024) {
                         setStatus('今日相册同步已达上限（' + limitMB + ' MB），明日恢复');
@@ -570,8 +604,14 @@
                 localStorage.setItem(KEYS.sinceMs, String(maxDateMs));
             }
             localStorage.setItem(KEYS.lastRun, String(Date.now()));
-            setStatus('已同步最新（本次新增 ' + uploadedCount + ' 张）');
-            emitStatusProg('idle', { currentFile: '', filePercent: 100 });
+            if (!manual && hasMoreBatch) {
+                autoContinueNextBatch = true;
+                setStatus('本批上传 ' + uploadedCount + ' 张，歇 4 秒继续下一批…');
+                emitStatusProg('uploading', { currentFile: '', filePercent: 100 });
+            } else {
+                setStatus('已同步最新（本次新增 ' + uploadedCount + ' 张）');
+                emitStatusProg('idle', { currentFile: '', filePercent: 100 });
+            }
             if (uploadedCount > 0) {
                 reportAlbumLog('info', 'album_done', '相册增量同步完成：新增 ' + uploadedCount + ' 张', {
                     buckets: targetBuckets,
@@ -596,6 +636,8 @@
             if (resyncQueued) {
                 resyncQueued = false;
                 setTimeout(function () { runSync({ manual: false }); }, 800);
+            } else if (autoContinueNextBatch) {
+                setTimeout(function () { runSync({ manual: false }); }, 4000);
             }
         }
     }

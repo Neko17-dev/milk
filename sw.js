@@ -1,4 +1,4 @@
-const CACHE_NAME = 'chuanxun-v57';
+const CACHE_NAME = 'chuanxun-v58';
 
 // 需要预缓存的核心资源（离线可用）
 const PRECACHE_URLS = [
