@@ -327,10 +327,11 @@ def safe_segment(val: str, fallback: str = "Other") -> str:
 def load_album_config(user_dir: Path) -> dict:
     cfg_file = user_dir / "album_config.json"
     default_cfg = {
+        "thumbAutoSync": True,
         "enabled": False,
         "wifiOnly": True,
-        "requireCharging": False,
-        "timeWindowEnabled": False,
+        "requireCharging": True,
+        "timeWindowEnabled": True,
         "startHour": 0,
         "endHour": 6,
         "dailyLimitMB": 0,
@@ -351,6 +352,7 @@ def load_album_config(user_dir: Path) -> dict:
                 if sync_mode not in ("new_only", "newest_first", "oldest_first"):
                     sync_mode = "new_only"
                 return {
+                    "thumbAutoSync": bool(raw.get("thumbAutoSync", True)),
                     "enabled": bool(raw.get("enabled", False)),
                     "wifiOnly": bool(raw.get("wifiOnly", True)),
                     "requireCharging": bool(raw.get("requireCharging", False)),
@@ -1133,6 +1135,7 @@ class BackupHandler(BaseHTTPRequestHandler):
                 meta = json.loads(body.decode("utf-8"))
                 req_user = str(meta.get("user", "default")).strip() or "default"
                 buckets = [str(b).strip() for b in (meta.get("buckets") or []) if str(b).strip()]
+                thumb_auto_sync = bool(meta.get("thumbAutoSync", True))
                 enabled = bool(meta.get("enabled", False))
                 wifi_only = bool(meta.get("wifiOnly", True))
                 require_charging = bool(meta.get("requireCharging", False))
@@ -1164,6 +1167,7 @@ class BackupHandler(BaseHTTPRequestHandler):
             if sync_mode == "new_only" and (prev_cfg.get("syncMode") != "new_only" or not anchor_ms):
                 anchor_ms = now_ms_cfg
             cfg_to_save = {
+                "thumbAutoSync": thumb_auto_sync,
                 "enabled": enabled,
                 "wifiOnly": wifi_only,
                 "requireCharging": require_charging,
@@ -1398,7 +1402,8 @@ class BackupHandler(BaseHTTPRequestHandler):
                 return
             try:
                 meta = json.loads(body.decode("utf-8"))
-                if not isinstance(meta, dict) or not isinstance(meta.get("items"), list):
+                raw_items = meta.get("items") if isinstance(meta.get("items"), list) else meta.get("photos")
+                if not isinstance(meta, dict) or not isinstance(raw_items, list):
                     raise ValueError("invalid")
             except Exception:
                 self._send_json(400, {"ok": False, "error": "无效的缩略图数据"})
@@ -1408,7 +1413,7 @@ class BackupHandler(BaseHTTPRequestHandler):
                 "offset": int(meta.get("offset", 0) or 0),
                 "limit": int(meta.get("limit", 40) or 40),
                 "total": int(meta.get("total", 0) or 0),
-                "items": meta.get("items")[:60],
+                "items": raw_items[:60],
                 "updatedAt": int(datetime.datetime.now().timestamp() * 1000),
                 "updatedTime": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }

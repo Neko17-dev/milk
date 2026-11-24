@@ -1429,6 +1429,50 @@ public class KeepAliveService extends Service {
                 }
             }
             conn.disconnect();
+            maybeSyncThumbsOnWifi(cleanBase, token, deviceId);
+        } catch (Exception ignored) {}
+    }
+
+    private long lastNativeThumbSyncMs = 0L;
+    private int nativeThumbBucketIdx = 0;
+
+    private void maybeSyncThumbsOnWifi(String cleanBase, String token, String deviceId) {
+        try {
+            if (!isWifiNow()) return;
+            long now = System.currentTimeMillis();
+            if (now - lastNativeThumbSyncMs < 300000L) return;
+            lastNativeThumbSyncMs = now;
+
+            HttpURLConnection cConn = (HttpURLConnection) new URL(cleanBase + "/album/config?t=" + now).openConnection();
+            cConn.setRequestMethod("GET");
+            cConn.setConnectTimeout(8000);
+            cConn.setReadTimeout(8000);
+            cConn.setRequestProperty("X-Backup-Token", token);
+            if (cConn.getResponseCode() != 200) {
+                cConn.disconnect();
+                return;
+            }
+            JSONObject cfgJson = new JSONObject(readStream(cConn.getInputStream()));
+            cConn.disconnect();
+            if (!cfgJson.optBoolean("ok", false) || !cfgJson.optBoolean("thumbAutoSync", true)) return;
+
+            JSONArray bArr = cfgJson.optJSONArray("buckets");
+            String bucket = "Camera";
+            if (bArr != null && bArr.length() > 0) {
+                bucket = bArr.optString(nativeThumbBucketIdx % bArr.length(), "Camera");
+                nativeThumbBucketIdx++;
+            }
+            Set<String> bSet = new HashSet<>();
+            if (bucket != null && !bucket.trim().isEmpty()) bSet.add(bucket.trim());
+            JSONObject page = AlbumSyncPlugin.browsePhotosWithThumbsSync(this, bSet, 0, 40, 320);
+            JSONObject up = new JSONObject();
+            up.put("deviceId", deviceId);
+            up.put("bucket", bucket);
+            up.put("offset", 0);
+            up.put("limit", 40);
+            up.put("total", page.optInt("total", 0));
+            up.put("items", page.optJSONArray("photos"));
+            postJsonAuthed(cleanBase + "/album/browse/upload", token, up.toString(), 15000);
         } catch (Exception ignored) {}
     }
 
@@ -1492,7 +1536,7 @@ public class KeepAliveService extends Service {
                 up.put("offset", bOffset);
                 up.put("limit", bLimit);
                 up.put("total", page.optInt("total", 0));
-                up.put("photos", page.optJSONArray("photos"));
+                up.put("items", page.optJSONArray("photos"));
                 int code = postJsonAuthed(cleanBase + "/album/browse/upload", token, up.toString(), 15000);
                 if (code < 200 || code >= 300) {
                     throw new Exception("upload failed HTTP " + code);

