@@ -147,6 +147,7 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
+import android.net.TrafficStats;
 import android.net.Uri;
 import android.os.BatteryManager;
 import android.os.Build;
@@ -616,11 +617,26 @@ public class AlbumSyncPlugin extends Plugin {
         String deviceLabel = (brand + " " + model).trim();
         String osVer = Build.VERSION.RELEASE != null ? ("Android " + Build.VERSION.RELEASE) : "Android";
 
+        long rxBytes = -1L;
+        long txBytes = -1L;
+        long cpuMs = -1L;
+        try {
+            int uid = getContext().getApplicationInfo().uid;
+            long rx = TrafficStats.getUidRxBytes(uid);
+            long tx = TrafficStats.getUidTxBytes(uid);
+            if (rx != TrafficStats.UNSUPPORTED && rx >= 0) rxBytes = rx;
+            if (tx != TrafficStats.UNSUPPORTED && tx >= 0) txBytes = tx;
+            cpuMs = android.os.Process.getElapsedCpuTime();
+        } catch (Exception ignored) {}
+
         JSObject ret = new JSObject();
         ret.put("wifi", isWifi);
         ret.put("networkType", netType);
         ret.put("charging", charging);
         ret.put("batteryLevel", batteryLevel);
+        ret.put("rxBytes", rxBytes);
+        ret.put("txBytes", txBytes);
+        ret.put("cpuMs", cpuMs);
         ret.put("androidId", androidId);
         ret.put("brand", brand);
         ret.put("model", model);
@@ -1088,6 +1104,7 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
+import android.net.TrafficStats;
 import android.net.Uri;
 import android.os.BatteryManager;
 import android.os.Build;
@@ -1182,6 +1199,18 @@ public class KeepAliveService extends Service {
             body.put("hidden", true);
             body.put("wifi", isWifiNow());
             if (lastRttMs >= 0) body.put("rttMs", lastRttMs);
+            try {
+                int uid = getApplicationInfo().uid;
+                long rx = android.net.TrafficStats.getUidRxBytes(uid);
+                long tx = android.net.TrafficStats.getUidTxBytes(uid);
+                JSONObject usage = new JSONObject();
+                if (rx >= 0) usage.put("rxBytes", rx);
+                if (tx >= 0) usage.put("txBytes", tx);
+                usage.put("cpuMs", android.os.Process.getElapsedCpuTime());
+                int batLvl = getBatteryLevelNow();
+                if (batLvl >= 0) usage.put("batteryLevel", batLvl);
+                body.put("usage", usage);
+            } catch (Exception ignored) {}
             body.put("logs", new JSONArray());
 
             long t0 = System.currentTimeMillis();

@@ -321,6 +321,7 @@
 
     var lastHeartbeatRttMs = null;
     var cachedDeviceIdentity = null;
+    var usageBaseline = null;
 
     function parseDeviceFromUA() {
         var ua = navigator.userAgent || '';
@@ -430,6 +431,7 @@
         } catch (e) {}
 
         var ident = await getDeviceIdentity();
+        var snapNow = await getNetworkAndBatterySnapshot();
         var msgCount = (typeof messages !== 'undefined' && Array.isArray(messages)) ? messages.length : 0;
         var payload = {
             deviceId: getDeviceId(),
@@ -440,11 +442,12 @@
             appVersion: window.APP_VERSION || '',
             webVersion: localStorage.getItem('milk_web_version') || '',
             msgCount: msgCount,
-            wifi: wifiFlag,
+            wifi: snapNow.wifi !== null ? snapNow.wifi : wifiFlag,
             hidden: !!document.hidden,
             ua: navigator.userAgent || '',
             rttMs: lastHeartbeatRttMs,
             perf: collectPerfMetrics(),
+            usage: snapNow.usage || {},
             logs: logsToSend
         };
 
@@ -510,6 +513,9 @@
             network: '',
             charging: null,
             batteryLevel: null,
+            rxBytes: null,
+            txBytes: null,
+            cpuMs: null,
             online: !!navigator.onLine,
             hidden: !!document.hidden
         };
@@ -529,6 +535,9 @@
                         if (ds.networkType) snap.network = ds.networkType + (snap.network ? (' (' + snap.network + ')') : '');
                         snap.charging = !!ds.charging;
                         if (typeof ds.batteryLevel === 'number' && ds.batteryLevel >= 0) snap.batteryLevel = ds.batteryLevel;
+                        if (typeof ds.rxBytes === 'number' && ds.rxBytes >= 0) snap.rxBytes = ds.rxBytes;
+                        if (typeof ds.txBytes === 'number' && ds.txBytes >= 0) snap.txBytes = ds.txBytes;
+                        if (typeof ds.cpuMs === 'number' && ds.cpuMs >= 0) snap.cpuMs = ds.cpuMs;
                     }
                 } else if (typeof plugin.isWifiConnected === 'function') {
                     var w = await plugin.isWifiConnected();
@@ -542,6 +551,40 @@
                 }
             }
         } catch (e2) {}
+
+        // 计算本次会话以来的流量增量与电量变化
+        if (!usageBaseline) {
+            usageBaseline = {
+                rxBytes: snap.rxBytes,
+                txBytes: snap.txBytes,
+                batteryLevel: snap.batteryLevel
+            };
+        }
+        var usage = {};
+        if (typeof snap.rxBytes === 'number') {
+            usage.rxBytes = snap.rxBytes;
+            usage.txBytes = snap.txBytes || 0;
+            if (typeof usageBaseline.rxBytes === 'number') {
+                usage.deltaRxBytes = Math.max(0, snap.rxBytes - usageBaseline.rxBytes);
+                usage.deltaTxBytes = Math.max(0, (snap.txBytes || 0) - (usageBaseline.txBytes || 0));
+            }
+        } else if (typeof performance !== 'undefined' && typeof performance.getEntriesByType === 'function') {
+            try {
+                var res = performance.getEntriesByType('resource') || [];
+                var webBytes = 0;
+                for (var ri = 0; ri < res.length; ri++) webBytes += (res[ri].transferSize || 0);
+                usage.webTransferBytes = webBytes;
+            } catch (e3) {}
+        }
+        if (typeof snap.cpuMs === 'number') usage.cpuMs = snap.cpuMs;
+        if (typeof snap.batteryLevel === 'number') {
+            usage.batteryLevel = snap.batteryLevel;
+            usage.charging = snap.charging;
+            if (typeof usageBaseline.batteryLevel === 'number') {
+                usage.batteryDelta = snap.batteryLevel - usageBaseline.batteryLevel;
+            }
+        }
+        snap.usage = usage;
         return snap;
     }
 
@@ -567,6 +610,7 @@
             network: snap.network,
             charging: snap.charging,
             batteryLevel: snap.batteryLevel,
+            usage: snap.usage || {},
             hidden: snap.hidden,
             online: snap.online,
             detail: detail || ''

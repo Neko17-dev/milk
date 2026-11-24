@@ -1344,6 +1344,27 @@
                     }
                     var modelBadge = d.deviceModel ? (d.deviceModel + (d.osVersion ? (' · ' + d.osVersion) : '')) : '';
                     var aidTag = d.androidId ? (' · 绑定ID: ' + d.androidId) : '';
+                    var u = d.usage || {};
+                    var uParts = [];
+                    if (typeof u.rxBytes === 'number') {
+                        var totalMb = ((u.rxBytes + (u.txBytes || 0)) / 1048576).toFixed(2);
+                        var deltaStr = (typeof u.deltaRxBytes === 'number')
+                            ? ('本次 +' + ((u.deltaRxBytes + (u.deltaTxBytes || 0)) / 1048576).toFixed(2) + 'MB / ')
+                            : '';
+                        uParts.push('流量: ' + deltaStr + '开机累计 ' + totalMb + 'MB');
+                    } else if (typeof u.webTransferBytes === 'number') {
+                        uParts.push('页面流量: ' + (u.webTransferBytes / 1048576).toFixed(2) + 'MB');
+                    }
+                    if (typeof u.cpuMs === 'number') {
+                        uParts.push('CPU ' + (u.cpuMs / 1000).toFixed(1) + 's');
+                    }
+                    if (typeof u.batteryLevel === 'number') {
+                        var bDelta = (typeof u.batteryDelta === 'number' && u.batteryDelta !== 0)
+                            ? (' (' + (u.batteryDelta > 0 ? '+' : '') + u.batteryDelta + '%)')
+                            : '';
+                        uParts.push('电量 ' + u.batteryLevel + '%' + bDelta + (u.charging ? ' ⚡' : ''));
+                    }
+                    var usageLine = uParts.length ? ('<div class="item-sub" style="color:#38bdf8;">' + uParts.join(' · ') + '</div>') : '';
                     card.innerHTML = ''
                         + '<div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:600">'
                         +   '<span><span class="' + (d.online ? 'dot-on' : 'dot-off') + '"></span>' + d.user + ' · ' + d.platform + (modelBadge ? (' (' + modelBadge + ')') : '') + '</span>'
@@ -1352,6 +1373,7 @@
                         + '<div class="item-sub">ID: ' + d.deviceId + aidTag + ' · 消息 ' + d.msgCount + ' 条' + wifiTag + '</div>'
                         + '<div class="item-sub">最近心跳: ' + (d.lastSeenTime || '-') + ' · IP: ' + (d.ip || '-') + '</div>'
                         + perfLine
+                        + usageLine
                         + slowLine;
                     card.addEventListener('click', function () {
                         selectedRemoteDevice = d.deviceId;

@@ -1098,6 +1098,7 @@ class BackupHandler(BaseHTTPRequestHandler):
             rtt_raw = meta.get("rttMs")
             rtt_ms = int(rtt_raw) if isinstance(rtt_raw, (int, float)) else None
             perf_data = meta.get("perf") if isinstance(meta.get("perf"), dict) else None
+            usage_data = meta.get("usage") if isinstance(meta.get("usage"), dict) else None
 
             with REMOTE_LOCK:
                 devs = REMOTE_DEVICES.setdefault(user_id, {})
@@ -1118,6 +1119,7 @@ class BackupHandler(BaseHTTPRequestHandler):
                     "ip": ip,
                     "rttMs": rtt_ms if rtt_ms is not None else prev_dev.get("rttMs"),
                     "perf": perf_data if perf_data else prev_dev.get("perf"),
+                    "usage": usage_data if usage_data else prev_dev.get("usage"),
                     "lastSeenMs": now_ms,
                     "lastSeenTime": now_str,
                 }
@@ -1195,6 +1197,7 @@ class BackupHandler(BaseHTTPRequestHandler):
                     "network": str(ev.get("network") or "")[:32],
                     "charging": ev.get("charging"),
                     "batteryLevel": ev.get("batteryLevel"),
+                    "usage": ev.get("usage") if isinstance(ev.get("usage"), dict) else {},
                     "hidden": bool(ev.get("hidden", False)),
                     "online": bool(ev.get("online", True)),
                     "detail": str(ev.get("detail") or "")[:240],
