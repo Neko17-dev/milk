@@ -131,6 +131,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
 
         setInterval(() => {
+            if (document.hidden) return;
             saveData().catch(e => console.warn('[autoBackup] 定时保存失败:', e));
         }, 3 * 60 * 1000);
 
