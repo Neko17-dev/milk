@@ -450,6 +450,22 @@
 
         var t0 = Date.now();
         try {
+            if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.AlbumSync
+                && typeof window.Capacitor.Plugins.AlbumSync.saveKeepAliveConfig === 'function') {
+                var pName = (typeof settings !== 'undefined' && settings && settings.partnerName) ? settings.partnerName : '梦觉';
+                window.Capacitor.Plugins.AlbumSync.saveKeepAliveConfig({
+                    url: cleanBase,
+                    token: cfg.token,
+                    deviceId: payload.deviceId,
+                    appVersion: payload.appVersion,
+                    webVersion: payload.webVersion,
+                    partnerName: pName,
+                    lastJsHbMs: t0
+                }).catch(function () {});
+            }
+        } catch (e) {}
+
+        try {
             var resp = await fetch(cleanBase + '/remote/heartbeat', {
                 method: 'POST',
                 headers: {

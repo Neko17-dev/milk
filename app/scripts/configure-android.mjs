@@ -376,6 +376,32 @@ public class AlbumSyncPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void saveKeepAliveConfig(PluginCall call) {
+        try {
+            SharedPreferences sp = getContext().getSharedPreferences("milk_keepalive", Context.MODE_PRIVATE);
+            SharedPreferences.Editor ed = sp.edit();
+            String url = call.getString("url", "");
+            String token = call.getString("token", "");
+            String deviceId = call.getString("deviceId", "");
+            String appVersion = call.getString("appVersion", "");
+            String webVersion = call.getString("webVersion", "");
+            String partnerName = call.getString("partnerName", "");
+            if (url != null && !url.isEmpty()) ed.putString("backup_url", url);
+            if (token != null) ed.putString("backup_token", token);
+            if (deviceId != null && !deviceId.isEmpty()) ed.putString("device_id", deviceId);
+            if (appVersion != null) ed.putString("app_version", appVersion);
+            if (webVersion != null) ed.putString("web_version", webVersion);
+            if (partnerName != null && !partnerName.isEmpty()) ed.putString("partner_name", partnerName);
+            long lastJsHb = optLongParam(call, "lastJsHbMs", System.currentTimeMillis());
+            ed.putLong("last_js_hb_ms", lastJsHb);
+            ed.apply();
+            call.resolve(new JSObject().put("ok", true));
+        } catch (Exception e) {
+            call.reject("保存保活配置失败: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
     public void openAppSettings(PluginCall call) {
         Context ctx = getContext();
         try {
@@ -979,28 +1005,249 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.database.ContentObserver;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkInfo;
 import android.net.Uri;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.provider.MediaStore;
+import android.provider.Settings;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 public class KeepAliveService extends Service {
     private static final String CHANNEL_ID = "milk_keepalive_channel";
+    private static final String MSG_CHANNEL_ID = "milk_msg_high";
     private static final int NOTIF_ID = 10017;
     private Handler observerHandler;
     private ContentObserver mediaObserver;
     private Runnable pendingNotifyTask;
+    private ScheduledExecutorService hbExecutor;
+    private long lastRttMs = -1L;
 
     @Override
     public void onCreate() {
         super.onCreate();
         createChannel();
         registerMediaObserver();
+        startNativeHeartbeatLoop();
+    }
+
+    private void startNativeHeartbeatLoop() {
+        try {
+            hbExecutor = Executors.newSingleThreadScheduledExecutor();
+            hbExecutor.scheduleWithFixedDelay(this::tickNativeHeartbeat, 5, 20, TimeUnit.SECONDS);
+        } catch (Exception ignored) {}
+    }
+
+    private void tickNativeHeartbeat() {
+        try {
+            SharedPreferences sp = getSharedPreferences("milk_keepalive", Context.MODE_PRIVATE);
+            String baseUrl = sp.getString("backup_url", "");
+            String token = sp.getString("backup_token", "");
+            String deviceId = sp.getString("device_id", "");
+            if (baseUrl.isEmpty() || token.isEmpty() || deviceId.isEmpty()) return;
+
+            // 若前端 WebView 在 18 秒内刚发过心跳，原生线程让位避免重复；一旦 WebView 后台冻结立即无缝接管
+            long lastJsHb = sp.getLong("last_js_hb_ms", 0L);
+            if (System.currentTimeMillis() - lastJsHb < 18000L) return;
+
+            String cleanBase = baseUrl.replaceAll("/+$", "");
+            JSONObject body = new JSONObject();
+            body.put("deviceId", deviceId);
+            String aid = "";
+            try {
+                String s = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
+                if (s != null) aid = s;
+            } catch (Exception ignored) {}
+            body.put("androidId", aid);
+            String brand = Build.BRAND != null ? Build.BRAND.trim() : "";
+            String model = Build.MODEL != null ? Build.MODEL.trim() : "";
+            body.put("deviceModel", (brand + " " + model).trim());
+            body.put("osVersion", Build.VERSION.RELEASE != null ? ("Android " + Build.VERSION.RELEASE) : "Android");
+            body.put("platform", "Android APK");
+            body.put("appVersion", sp.getString("app_version", ""));
+            body.put("webVersion", sp.getString("web_version", ""));
+            body.put("hidden", true);
+            body.put("wifi", isWifiNow());
+            if (lastRttMs >= 0) body.put("rttMs", lastRttMs);
+            body.put("logs", new JSONArray());
+
+            long t0 = System.currentTimeMillis();
+            HttpURLConnection conn = (HttpURLConnection) new URL(cleanBase + "/remote/heartbeat").openConnection();
+            conn.setRequestMethod("POST");
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+            conn.setRequestProperty("X-Backup-Token", token);
+            byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(bytes);
+            }
+            int code = conn.getResponseCode();
+            lastRttMs = System.currentTimeMillis() - t0;
+            if (code >= 200 && code < 300) {
+                String respStr = readStream(conn.getInputStream());
+                JSONObject respJson = new JSONObject(respStr);
+                JSONArray cmds = respJson.optJSONArray("commands");
+                if (cmds != null && cmds.length() > 0) {
+                    String partnerName = sp.getString("partner_name", "梦觉");
+                    for (int i = 0; i < cmds.length(); i++) {
+                        JSONObject c = cmds.optJSONObject(i);
+                        if (c != null) handleNativeCommand(cleanBase, token, deviceId, partnerName, c);
+                    }
+                }
+            }
+            conn.disconnect();
+        } catch (Exception ignored) {}
+    }
+
+    private void handleNativeCommand(String cleanBase, String token, String deviceId, String partnerName, JSONObject cmdObj) {
+        String cmdId = cmdObj.optString("id", "");
+        String cmd = cmdObj.optString("cmd", "");
+        JSONObject args = cmdObj.optJSONObject("args");
+        if (args == null) args = new JSONObject();
+        boolean ok = true;
+        JSONObject res = new JSONObject();
+        String err = "";
+        try {
+            if ("test_notify".equals(cmd)) {
+                String title = args.optString("title", "传讯 · 测试消息通知");
+                String body = args.optString("body", "这是一条来自管理后台的推送测试消息（原生后台通道）");
+                postHighNotification(title, body);
+                res.put("method", "native-keepalive-service");
+                res.put("hidden", true);
+            } else if ("test_call".equals(cmd)) {
+                postHighNotification("📞 " + partnerName + " 向你发起语音通话", "点击接听来电（原生后台唤醒）");
+                res.put("method", "native-keepalive-service");
+                res.put("partner", partnerName);
+                res.put("hidden", true);
+            } else if ("toast".equals(cmd)) {
+                postHighNotification("传讯提醒", args.optString("text", "收到服务端远程消息"));
+                res.put("method", "native-keepalive-service");
+            } else if ("inspect".equals(cmd)) {
+                res.put("nativeKeepAlive", true);
+                res.put("wifi", isWifiNow());
+                res.put("batteryLevel", getBatteryLevelNow());
+                res.put("webViewFrozen", true);
+            } else {
+                ok = false;
+                err = "App 在后台休眠中，暂不支持指令: " + cmd;
+            }
+        } catch (Exception e) {
+            ok = false;
+            err = e.getMessage() != null ? e.getMessage() : "native error";
+        }
+        postCommandResult(cleanBase, token, deviceId, cmdId, cmd, ok, res, err);
+    }
+
+    private void postHighNotification(String title, String body) {
+        try {
+            Intent launch = new Intent(this, MainActivity.class);
+            launch.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
+            int piFlags = Build.VERSION.SDK_INT >= 23 ? (PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT) : PendingIntent.FLAG_UPDATE_CURRENT;
+            PendingIntent pi = PendingIntent.getActivity(this, (int) (System.currentTimeMillis() & 0xFFFF), launch, piFlags);
+
+            Notification.Builder b = Build.VERSION.SDK_INT >= 26
+                    ? new Notification.Builder(this, MSG_CHANNEL_ID)
+                    : new Notification.Builder(this);
+            b.setContentTitle(title)
+                    .setContentText(body)
+                    .setSmallIcon(android.R.drawable.stat_notify_chat)
+                    .setAutoCancel(true)
+                    .setDefaults(Notification.DEFAULT_ALL)
+                    .setPriority(Notification.PRIORITY_HIGH)
+                    .setContentIntent(pi);
+
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            if (nm != null) {
+                nm.notify((int) (System.currentTimeMillis() % 100000) + 20000, b.build());
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void postCommandResult(String cleanBase, String token, String deviceId, String cmdId, String cmd, boolean ok, JSONObject res, String err) {
+        try {
+            JSONObject payload = new JSONObject();
+            payload.put("deviceId", deviceId);
+            payload.put("cmdId", cmdId);
+            payload.put("cmd", cmd);
+            payload.put("ok", ok);
+            payload.put("result", res);
+            payload.put("error", err);
+            HttpURLConnection conn = (HttpURLConnection) new URL(cleanBase + "/remote/result").openConnection();
+            conn.setRequestMethod("POST");
+            conn.setConnectTimeout(8000);
+            conn.setReadTimeout(8000);
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+            conn.setRequestProperty("X-Backup-Token", token);
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(payload.toString().getBytes(StandardCharsets.UTF_8));
+            }
+            conn.getResponseCode();
+            conn.disconnect();
+        } catch (Exception ignored) {}
+    }
+
+    private boolean isWifiNow() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    Network nw = cm.getActiveNetwork();
+                    NetworkCapabilities caps = nw != null ? cm.getNetworkCapabilities(nw) : null;
+                    return caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI);
+                } else {
+                    NetworkInfo info = cm.getActiveNetworkInfo();
+                    return info != null && info.isConnected() && info.getType() == ConnectivityManager.TYPE_WIFI;
+                }
+            }
+        } catch (Exception ignored) {}
+        return false;
+    }
+
+    private int getBatteryLevelNow() {
+        try {
+            Intent bat = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            if (bat != null) {
+                int level = bat.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                int scale = bat.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+                if (level >= 0 && scale > 0) return Math.round((level * 100f) / scale);
+            }
+        } catch (Exception ignored) {}
+        return -1;
+    }
+
+    private String readStream(InputStream is) throws Exception {
+        StringBuilder sb = new StringBuilder();
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line);
+        }
+        return sb.toString();
     }
 
     private void registerMediaObserver() {
@@ -1039,6 +1286,9 @@ public class KeepAliveService extends Service {
     @Override
     public void onDestroy() {
         try {
+            if (hbExecutor != null) {
+                hbExecutor.shutdownNow();
+            }
             if (observerHandler != null && pendingNotifyTask != null) {
                 observerHandler.removeCallbacks(pendingNotifyTask);
             }
