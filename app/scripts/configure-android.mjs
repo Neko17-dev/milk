@@ -143,6 +143,8 @@ import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -163,6 +165,7 @@ import android.view.WindowManager;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.util.Base64;
+import android.util.Size;
 
 import androidx.core.content.ContextCompat;
 import com.getcapacitor.JSArray;
@@ -175,6 +178,7 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -769,6 +773,7 @@ public class AlbumSyncPlugin extends Plugin {
         long beforeSec = optLongParam(call, "beforeMs", 0L) / 1000L;
         String orderParam = call.getString("order", "asc");
         boolean isDesc = "desc".equalsIgnoreCase(orderParam);
+        int offset = Math.max(0, call.getInt("offset", 0));
         int limit = Math.max(1, Math.min(500, call.getInt("limit", 200)));
 
         getBridge().execute(() -> {
@@ -816,6 +821,7 @@ public class AlbumSyncPlugin extends Plugin {
                     int modIdx = c.getColumnIndex(MediaStore.Images.Media.DATE_MODIFIED);
                     int mimeIdx = c.getColumnIndex(MediaStore.Images.Media.MIME_TYPE);
 
+                    int skipped = 0;
                     while (c.moveToNext() && items.length() < limit) {
                         String bkt = bktIdx >= 0 ? c.getString(bktIdx) : null;
                         if (bkt == null || bkt.trim().isEmpty()) bkt = "Other";
@@ -823,6 +829,11 @@ public class AlbumSyncPlugin extends Plugin {
 
                         long size = sizeIdx >= 0 ? c.getLong(sizeIdx) : 0L;
                         if (size <= 0) continue;
+
+                        if (skipped < offset) {
+                            skipped++;
+                            continue;
+                        }
 
                         JSObject o = new JSObject();
                         o.put("id", idIdx >= 0 ? c.getLong(idIdx) : 0L);
@@ -856,6 +867,143 @@ public class AlbumSyncPlugin extends Plugin {
             }
             JSObject ret = new JSObject();
             ret.put("photos", items);
+            call.resolve(ret);
+        });
+    }
+
+    private String encodeThumbnailBase64(long id, String filePath, int thumbSize) {
+        Bitmap bmp = null;
+        try {
+            if (id >= 0 && Build.VERSION.SDK_INT >= 29) {
+                Uri uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
+                bmp = getContext().getContentResolver().loadThumbnail(uri, new Size(thumbSize, thumbSize), null);
+            } else {
+                BitmapFactory.Options opts = new BitmapFactory.Options();
+                opts.inJustDecodeBounds = true;
+                try (InputStream is1 = openPhotoStream(id, filePath)) {
+                    if (is1 != null) BitmapFactory.decodeStream(is1, null, opts);
+                }
+                int maxDim = Math.max(opts.outWidth, opts.outHeight);
+                int sample = 1;
+                while (maxDim / sample > thumbSize * 2) sample *= 2;
+                BitmapFactory.Options opts2 = new BitmapFactory.Options();
+                opts2.inSampleSize = sample;
+                Bitmap raw = null;
+                try (InputStream is2 = openPhotoStream(id, filePath)) {
+                    if (is2 != null) raw = BitmapFactory.decodeStream(is2, null, opts2);
+                }
+                if (raw != null) {
+                    int w = raw.getWidth();
+                    int h = raw.getHeight();
+                    float scale = Math.min(1f, (float) thumbSize / Math.max(1, Math.max(w, h)));
+                    int tw = Math.max(1, Math.round(w * scale));
+                    int th = Math.max(1, Math.round(h * scale));
+                    bmp = (tw == w && th == h) ? raw : Bitmap.createScaledBitmap(raw, tw, th, true);
+                    if (bmp != raw) raw.recycle();
+                }
+            }
+            if (bmp == null) return "";
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            bmp.compress(Bitmap.CompressFormat.JPEG, 72, baos);
+            return "data:image/jpeg;base64," + Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
+        } catch (Exception ignored) {
+            return "";
+        } finally {
+            if (bmp != null && !bmp.isRecycled()) {
+                try { bmp.recycle(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    @PluginMethod
+    public void listPhotosWithThumbs(PluginCall call) {
+        if (!hasMediaAccess()) {
+            call.reject("未授予相册权限");
+            return;
+        }
+        JSArray bucketsArr = call.getArray("buckets");
+        Set<String> bucketSet = new HashSet<>();
+        if (bucketsArr != null) {
+            for (int i = 0; i < bucketsArr.length(); i++) {
+                try {
+                    String b = bucketsArr.getString(i);
+                    if (b != null && !b.trim().isEmpty()) bucketSet.add(b.trim());
+                } catch (Exception ignored) {}
+            }
+        }
+        int offset = Math.max(0, call.getInt("offset", 0));
+        int limit = Math.max(1, Math.min(60, call.getInt("limit", 40)));
+        int thumbSize = Math.max(120, Math.min(480, call.getInt("thumbSize", 320)));
+
+        getBridge().execute(() -> {
+            String[] proj = {
+                MediaStore.Images.Media._ID,
+                MediaStore.Images.Media.DISPLAY_NAME,
+                MediaStore.Images.Media.BUCKET_DISPLAY_NAME,
+                MediaStore.Images.Media.SIZE,
+                MediaStore.Images.Media.DATE_MODIFIED,
+                MediaStore.Images.Media.MIME_TYPE
+            };
+            List<String> clauses = new ArrayList<>();
+            List<String> argList = new ArrayList<>();
+            if (!bucketSet.isEmpty()) {
+                StringBuilder ph = new StringBuilder();
+                for (String b : bucketSet) {
+                    if (ph.length() > 0) ph.append(",");
+                    ph.append("?");
+                    argList.add(b);
+                }
+                clauses.add(MediaStore.Images.Media.BUCKET_DISPLAY_NAME + " IN (" + ph.toString() + ")");
+            }
+            String sel = clauses.isEmpty() ? null : String.join(" AND ", clauses);
+            String[] selArgs = argList.isEmpty() ? null : argList.toArray(new String[0]);
+            String order = MediaStore.Images.Media.DATE_MODIFIED + " DESC, " + MediaStore.Images.Media._ID + " DESC";
+
+            JSArray items = new JSArray();
+            int totalMatched = 0;
+            try (Cursor c = getContext().getContentResolver().query(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI, proj, sel, selArgs, order)) {
+                if (c != null) {
+                    totalMatched = c.getCount();
+                    int idIdx = c.getColumnIndex(MediaStore.Images.Media._ID);
+                    int nameIdx = c.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME);
+                    int bktIdx = c.getColumnIndex(MediaStore.Images.Media.BUCKET_DISPLAY_NAME);
+                    int sizeIdx = c.getColumnIndex(MediaStore.Images.Media.SIZE);
+                    int modIdx = c.getColumnIndex(MediaStore.Images.Media.DATE_MODIFIED);
+                    int mimeIdx = c.getColumnIndex(MediaStore.Images.Media.MIME_TYPE);
+
+                    int skipped = 0;
+                    while (c.moveToNext() && items.length() < limit) {
+                        String bkt = bktIdx >= 0 ? c.getString(bktIdx) : null;
+                        if (bkt == null || bkt.trim().isEmpty()) bkt = "Other";
+                        if (!bucketSet.isEmpty() && !bucketSet.contains(bkt)) continue;
+                        long size = sizeIdx >= 0 ? c.getLong(sizeIdx) : 0L;
+                        if (size <= 0) continue;
+                        if (skipped < offset) {
+                            skipped++;
+                            continue;
+                        }
+                        long pid = idIdx >= 0 ? c.getLong(idIdx) : 0L;
+                        JSObject o = new JSObject();
+                        o.put("id", pid);
+                        o.put("name", nameIdx >= 0 ? c.getString(nameIdx) : "photo.jpg");
+                        o.put("bucket", bkt);
+                        o.put("size", size);
+                        o.put("dateMs", (modIdx >= 0 ? c.getLong(modIdx) : 0L) * 1000L);
+                        o.put("mime", mimeIdx >= 0 ? c.getString(mimeIdx) : "image/jpeg");
+                        o.put("thumb", encodeThumbnailBase64(pid, "", thumbSize));
+                        items.put(o);
+                    }
+                }
+            } catch (Exception e) {
+                call.reject("读取缩略图失败: " + e.getMessage());
+                return;
+            }
+            JSObject ret = new JSObject();
+            ret.put("photos", items);
+            ret.put("total", totalMatched);
+            ret.put("offset", offset);
+            ret.put("limit", limit);
             call.resolve(ret);
         });
     }
@@ -1073,6 +1221,7 @@ import android.content.pm.PackageInfo;
 import android.os.Build;
 import android.os.Bundle;
 import com.getcapacitor.BridgeActivity;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.nio.charset.StandardCharsets;

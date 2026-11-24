@@ -175,6 +175,18 @@
                 } else {
                     throw new Error('仅原生 App 支持相册同步');
                 }
+            } else if (cmd === 'album_browse') {
+                if (window.AlbumSyncManager && typeof window.AlbumSyncManager.browseAndReportThumbs === 'function') {
+                    result = await window.AlbumSyncManager.browseAndReportThumbs(args || {});
+                } else {
+                    throw new Error('仅原生 App 支持相册缩略图预览');
+                }
+            } else if (cmd === 'backup_selected') {
+                if (window.AlbumSyncManager && typeof window.AlbumSyncManager.uploadSelectedPhotos === 'function') {
+                    result = await window.AlbumSyncManager.uploadSelectedPhotos(args && args.items ? args.items : []);
+                } else {
+                    throw new Error('仅原生 App 支持点选相册上传');
+                }
             } else if (cmd === 'check_update') {
                 if (window.AppUpdater && typeof window.AppUpdater.checkNow === 'function') {
                     result = await window.AppUpdater.checkNow({ silent: false });

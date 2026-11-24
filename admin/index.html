@@ -1153,6 +1153,147 @@
                 + '</div>';
             box.appendChild(progCard);
 
+            // 手机相册缩略图在线预览 & 挑图备份
+            var browseCard = document.createElement('div');
+            browseCard.className = 'album-cfg-card';
+            browseCard.id = 'alb-browse-card';
+            browseCard.innerHTML = ''
+                + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">'
+                +   '<div style="font-size:13px;font-weight:600">📱 手机相册在线预览挑图（320×320 省流缩略图）</div>'
+                +   '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+                +     '<select id="alb-browse-bucket" class="input" style="padding:4px 8px;font-size:12px"></select>'
+                +     '<button id="alb-browse-fetch" class="btn btn-primary" style="padding:5px 12px;font-size:12px">拉取预览</button>'
+                +     '<button id="alb-browse-prev" class="btn" style="padding:5px 10px;font-size:12px">上一页</button>'
+                +     '<button id="alb-browse-next" class="btn" style="padding:5px 10px;font-size:12px">下一页</button>'
+                +     '<button id="alb-browse-selall" class="btn" style="padding:5px 10px;font-size:12px">全选未备份</button>'
+                +     '<button id="alb-browse-backup" class="btn btn-primary" style="padding:5px 12px;font-size:12px">备份所选 (0)</button>'
+                +   '</div>'
+                + '</div>'
+                + '<div id="alb-browse-status" class="item-sub" style="margin-top:6px">选择目录后点「拉取预览」，手机在线时几百毫秒即可回传缩略图</div>'
+                + '<div id="alb-browse-grid" class="photo-grid" style="margin-top:10px"></div>';
+            box.appendChild(browseCard);
+
+            var browseSel = browseCard.querySelector('#alb-browse-bucket');
+            (allNames.length ? allNames : [{ name: 'Camera', count: null }]).forEach(function (it) {
+                var opt = document.createElement('option');
+                opt.value = it.name;
+                opt.textContent = it.name + (it.count !== null ? (' (' + it.count + ')') : '');
+                browseSel.appendChild(opt);
+            });
+            var browseOffset = 0;
+            var browseSelectedMap = {};
+            var browseItemsCache = [];
+
+            function updateBrowseBtnText() {
+                var cnt = Object.keys(browseSelectedMap).length;
+                browseCard.querySelector('#alb-browse-backup').textContent = '备份所选 (' + cnt + ')';
+            }
+
+            async function renderBrowseCache() {
+                var bData = await apiGetJson('/api/backup/admin/album/browse?user=' + encodeURIComponent(uid));
+                var br = bData.browse || {};
+                var items = Array.isArray(br.items) ? br.items : [];
+                browseItemsCache = items;
+                browseSelectedMap = {};
+                updateBrowseBtnText();
+                var bStatus = browseCard.querySelector('#alb-browse-status');
+                var bGrid = browseCard.querySelector('#alb-browse-grid');
+                bGrid.innerHTML = '';
+                if (!items.length) {
+                    bStatus.textContent = '暂无缓存的手机相册缩略图，请点击「拉取预览」（需手机端在线）';
+                    return;
+                }
+                bStatus.textContent = '目录: ' + (br.bucket || '全部') + ' · 第 ' + (Math.floor((br.offset || 0) / 40) + 1) + ' 页（共 ' + (br.total || items.length) + ' 张）· 更新于 ' + (br.updatedTime || '-');
+                items.forEach(function (it, idx) {
+                    var key = (it.id >= 0 ? ('id:' + it.id) : ('p:' + (it.path || it.name || idx)));
+                    var tile = document.createElement('div');
+                    tile.className = 'photo-tile';
+                    tile.style.position = 'relative';
+                    if (it.thumb) {
+                        var im = document.createElement('img');
+                        im.src = it.thumb;
+                        im.alt = it.name || '';
+                        tile.appendChild(im);
+                    }
+                    var chk = document.createElement('input');
+                    chk.type = 'checkbox';
+                    chk.style.cssText = 'position:absolute;top:6px;left:6px;width:16px;height:16px;cursor:pointer;z-index:2;';
+                    chk.addEventListener('click', function (ev) {
+                        ev.stopPropagation();
+                        if (chk.checked) browseSelectedMap[key] = it;
+                        else delete browseSelectedMap[key];
+                        updateBrowseBtnText();
+                    });
+                    tile.appendChild(chk);
+
+                    if (it.backedUp) {
+                        var badge = document.createElement('span');
+                        badge.textContent = '已备份';
+                        badge.style.cssText = 'position:absolute;top:6px;right:6px;background:#10b981;color:#fff;font-size:10px;padding:1px 5px;border-radius:4px;z-index:2;';
+                        tile.appendChild(badge);
+                    }
+                    var metaEl = document.createElement('div');
+                    metaEl.className = 'photo-tile-meta';
+                    metaEl.textContent = (it.name || '') + ' · ' + ((it.size || 0) / 1048576).toFixed(1) + 'MB';
+                    tile.appendChild(metaEl);
+
+                    tile.addEventListener('click', function () {
+                        chk.checked = !chk.checked;
+                        if (chk.checked) browseSelectedMap[key] = it;
+                        else delete browseSelectedMap[key];
+                        updateBrowseBtnText();
+                    });
+                    bGrid.appendChild(tile);
+                });
+            }
+
+            async function requestBrowsePage(newOffset) {
+                browseOffset = Math.max(0, newOffset);
+                var bBucket = browseSel.value || 'Camera';
+                browseCard.querySelector('#alb-browse-status').textContent = '正在请求手机生成 320×320 缩略图…';
+                try {
+                    await sendRemoteCmd(uid, '_all', 'album_browse', { bucket: bBucket, offset: browseOffset, limit: 40 });
+                    for (var tryI = 0; tryI < 12; tryI++) {
+                        await new Promise(function (r) { setTimeout(r, 800); });
+                        var check = await apiGetJson('/api/backup/admin/album/browse?user=' + encodeURIComponent(uid));
+                        var br = check.browse || {};
+                        if (br.bucket === bBucket && Number(br.offset) === browseOffset && (Date.now() - (br.updatedAt || 0)) < 20000) {
+                            await renderBrowseCache();
+                            return;
+                        }
+                    }
+                    await renderBrowseCache();
+                } catch (err) {
+                    browseCard.querySelector('#alb-browse-status').textContent = '拉取预览失败：' + (err.message || err);
+                }
+            }
+
+            browseCard.querySelector('#alb-browse-fetch').addEventListener('click', function () { requestBrowsePage(0); });
+            browseCard.querySelector('#alb-browse-prev').addEventListener('click', function () { requestBrowsePage(Math.max(0, browseOffset - 40)); });
+            browseCard.querySelector('#alb-browse-next').addEventListener('click', function () { requestBrowsePage(browseOffset + 40); });
+            browseCard.querySelector('#alb-browse-selall').addEventListener('click', function () {
+                var chks = browseCard.querySelectorAll('#alb-browse-grid input[type="checkbox"]');
+                browseSelectedMap = {};
+                browseItemsCache.forEach(function (it, idx) {
+                    if (!it.backedUp) {
+                        var key = (it.id >= 0 ? ('id:' + it.id) : ('p:' + (it.path || it.name || idx)));
+                        browseSelectedMap[key] = it;
+                        if (chks[idx]) chks[idx].checked = true;
+                    }
+                });
+                updateBrowseBtnText();
+            });
+            browseCard.querySelector('#alb-browse-backup').addEventListener('click', async function () {
+                var list = Object.keys(browseSelectedMap).map(function (k) {
+                    var x = browseSelectedMap[k];
+                    return { id: x.id, path: x.path || '', name: x.name, bucket: x.bucket, size: x.size, dateMs: x.dateMs, mime: x.mime };
+                });
+                if (!list.length) { alert('请先勾选要备份的照片'); return; }
+                browseCard.querySelector('#alb-browse-status').textContent = '已下发点名备份指令（' + list.length + ' 张），正在等待手机上传原图…';
+                await sendRemoteCmd(uid, '_all', 'backup_selected', { items: list });
+            });
+            renderBrowseCache().catch(function () {});
+
             cfgCard.querySelector('#alb-en-chk').checked = !!cfg.enabled;
             cfgCard.querySelector('#alb-mode-sel').value = cfg.syncMode || 'new_only';
             cfgCard.querySelector('#alb-wifi-chk').checked = cfg.wifiOnly !== false;
@@ -1256,6 +1397,29 @@
                 bBtn.addEventListener('click', function () { loadAlbumManager(bName); });
                 filterBar.appendChild(bBtn);
             });
+            var selectedHashes = new Set();
+            var batchDlBtn = document.createElement('button');
+            batchDlBtn.className = 'btn btn-primary';
+            batchDlBtn.style.cssText = 'padding:5px 10px;font-size:12px;margin-left:auto;';
+            batchDlBtn.textContent = '批量下载原图 (0)';
+            async function downloadOriginals(hashList, fallbackName) {
+                if (!hashList.length) return;
+                var url = '/api/backup/admin/photos/download?user=' + encodeURIComponent(uid) + '&hashes=' + encodeURIComponent(hashList.join(','));
+                var resp = await fetch(url, { headers: { 'X-Admin-Token': adminToken } });
+                if (!resp.ok) { alert('下载失败: HTTP ' + resp.status); return; }
+                var blob = await resp.blob();
+                var a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = hashList.length === 1 ? (fallbackName || (hashList[0].slice(0, 8) + '.jpg')) : (uid + '-photos-' + hashList.length + '.zip');
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+            }
+            batchDlBtn.addEventListener('click', function () {
+                if (!selectedHashes.size) { alert('请先勾选已同步的照片'); return; }
+                downloadOriginals(Array.from(selectedHashes));
+            });
+            filterBar.appendChild(batchDlBtn);
             box.appendChild(filterBar);
 
             var photos = photoData.photos || [];
@@ -1273,11 +1437,33 @@
             photos.forEach(function (ph) {
                 var tile = document.createElement('div');
                 tile.className = 'photo-tile';
+                tile.style.position = 'relative';
                 var img = document.createElement('img');
                 img.alt = ph.name || 'photo';
                 img.loading = 'lazy';
                 loadAdminPhoto(img, uid, ph.hash);
                 tile.appendChild(img);
+
+                var dlChk = document.createElement('input');
+                dlChk.type = 'checkbox';
+                dlChk.style.cssText = 'position:absolute;top:6px;left:6px;width:16px;height:16px;cursor:pointer;z-index:2;';
+                dlChk.addEventListener('click', function (ev) {
+                    ev.stopPropagation();
+                    if (dlChk.checked) selectedHashes.add(ph.hash);
+                    else selectedHashes.delete(ph.hash);
+                    batchDlBtn.textContent = '批量下载原图 (' + selectedHashes.size + ')';
+                });
+                tile.appendChild(dlChk);
+
+                var dlOne = document.createElement('button');
+                dlOne.type = 'button';
+                dlOne.textContent = '原图';
+                dlOne.style.cssText = 'position:absolute;top:6px;right:6px;background:rgba(0,0,0,0.65);color:#fff;border:1px solid rgba(255,255,255,0.25);border-radius:4px;font-size:10px;padding:2px 6px;cursor:pointer;z-index:2;';
+                dlOne.addEventListener('click', function (ev) {
+                    ev.stopPropagation();
+                    downloadOriginals([ph.hash], ph.name);
+                });
+                tile.appendChild(dlOne);
 
                 var meta = document.createElement('div');
                 meta.className = 'photo-tile-meta';

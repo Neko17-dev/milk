@@ -644,9 +644,74 @@
         }, 5000);
     }
 
+    async function browseAndReportThumbs(opts) {
+        opts = opts || {};
+        var plugin = getPlugin();
+        if (!plugin || typeof plugin.listPhotosWithThumbs !== 'function') {
+            throw new Error('请升级到 v1.1.6+ APK 才能预览手机相册缩略图');
+        }
+        var cfg = getCloudCfg();
+        if (!cfg.token) throw new Error('未配置备份密钥');
+        var cleanBase = (cfg.url || 'https://milk.starleave.cn/api/backup').replace(/\/+$/, '');
+        var bucket = String(opts.bucket || '').trim();
+        var offset = Math.max(0, Number(opts.offset) || 0);
+        var limit = Math.max(1, Math.min(60, Number(opts.limit) || 40));
+
+        var res = await plugin.listPhotosWithThumbs({
+            buckets: bucket ? [bucket] : [],
+            offset: offset,
+            limit: limit,
+            thumbSize: 320
+        });
+        var payload = {
+            bucket: bucket,
+            offset: res.offset || offset,
+            limit: res.limit || limit,
+            total: res.total || 0,
+            items: Array.isArray(res.photos) ? res.photos : []
+        };
+        await sendXhr('POST', cleanBase + '/album/browse/upload', {
+            'Content-Type': 'application/json',
+            'X-Backup-Token': cfg.token
+        }, JSON.stringify(payload), 30000);
+        return { ok: true, count: payload.items.length, total: payload.total, offset: payload.offset };
+    }
+
+    async function uploadSelectedPhotos(items) {
+        if (!Array.isArray(items) || !items.length) return { ok: true, uploaded: 0 };
+        var plugin = getPlugin();
+        if (!plugin) throw new Error('原生插件 AlbumSync 未加载');
+        var cfg = getCloudCfg();
+        if (!cfg.token) throw new Error('未配置备份密钥');
+        var cleanBase = (cfg.url || 'https://milk.starleave.cn/api/backup').replace(/\/+$/, '');
+
+        var doneSet = getDoneSet();
+        var uploaded = 0;
+        for (var i = 0; i < items.length; i++) {
+            var p = items[i];
+            if (!p) continue;
+            var hRes = await plugin.getPhotoSha256({ id: p.id, path: p.path || '' });
+            var hash = hRes && hRes.hash ? hRes.hash : '';
+            if (!hash) continue;
+            await uploadSinglePhotoResumable(plugin, cleanBase, cfg.token, p, hash, i, items.length, {
+                syncedCount: doneSet.size,
+                totalTargetCount: items.length,
+                dailyLimitMB: 0,
+                syncMode: 'selected'
+            });
+            doneSet.add(hash);
+            saveDoneSet(doneSet);
+            uploaded++;
+        }
+        reportAlbumLog('info', 'album_selected_done', '点选相册备份完成：上传 ' + uploaded + ' 张', { uploaded: uploaded });
+        return { ok: true, uploaded: uploaded };
+    }
+
     window.AlbumSyncManager = {
         isNativeApp: isNativeApp,
         runSync: runSync,
+        browseAndReportThumbs: browseAndReportThumbs,
+        uploadSelectedPhotos: uploadSelectedPhotos,
         getStatusText: function () { return statusText; },
         resetCursor: function () {
             localStorage.removeItem(KEYS.sinceMs);

@@ -88,7 +88,7 @@ REMOTE_DEVICES: Dict[str, Dict[str, dict]] = {}
 REMOTE_COMMANDS: Dict[str, Dict[str, list]] = {}
 REMOTE_LOGS: Dict[str, list] = {}
 REMOTE_RESULTS: Dict[str, list] = {}
-ALLOWED_REMOTE_CMDS = {"inspect", "backup_chat", "sync_album", "reload_cache", "check_update", "toast", "test_notify", "test_call"}
+ALLOWED_REMOTE_CMDS = {"inspect", "backup_chat", "sync_album", "reload_cache", "check_update", "toast", "test_notify", "test_call", "album_browse", "backup_selected"}
 WEB_BUNDLE_CACHE = {"ver": "", "bytes": b""}
 WEB_BUNDLE_LOCK = threading.Lock()
 _LAST_DEV_SAVE_TS: Dict[str, float] = {}
@@ -673,6 +673,106 @@ class BackupHandler(BaseHTTPRequestHandler):
                     pass
             events.sort(key=lambda x: x.get("ts", 0), reverse=True)
             self._send_json(200, {"ok": True, "user": req_user, "date": selected_date, "dates": dates[:60], "events": events[:500]})
+            return
+
+        # 管理员只读接口：获取手机端上报的相册缩略图浏览缓存
+        if path in ("/api/backup/admin/album/browse", "/admin/album/browse"):
+            if not self._authenticate_admin():
+                return
+            qs = parse_qs(parsed.query)
+            req_user = (qs.get("user") or ["default"])[0].strip()
+            if MULTI_USER_MODE:
+                if not USER_ID_RE.match(req_user):
+                    self._send_json(400, {"ok": False, "error": "无效的用户名"})
+                    return
+                target_dir = (BACKUP_DIR / req_user).resolve()
+            else:
+                target_dir = BACKUP_DIR.resolve()
+            cache_file = target_dir / "album_browse_cache.json"
+            data = {}
+            if cache_file.is_file():
+                try:
+                    data = json.loads(cache_file.read_text(encoding="utf-8"))
+                except Exception:
+                    data = {}
+            idx = load_album_index(target_dir)
+            by_sig = {}
+            for h, meta in idx.items():
+                if isinstance(meta, dict):
+                    sig = f"{meta.get('bucket', '')}|{meta.get('name', '')}|{meta.get('size', 0)}"
+                    by_sig[sig] = h
+            for it in (data.get("items") or []):
+                if isinstance(it, dict):
+                    sig = f"{it.get('bucket', '')}|{it.get('name', '')}|{it.get('size', 0)}"
+                    bh = by_sig.get(sig)
+                    it["backedUp"] = bool(bh)
+                    if bh:
+                        it["backedUpHash"] = bh
+            self._send_json(200, {"ok": True, "browse": data})
+            return
+
+        # 管理员只读接口：单张或批量打包下载原图 GET /api/backup/admin/photos/download?user=xxx&hashes=h1,h2
+        if path in ("/api/backup/admin/photos/download", "/admin/photos/download"):
+            if not self._authenticate_admin():
+                return
+            qs = parse_qs(parsed.query)
+            req_user = (qs.get("user") or ["default"])[0].strip()
+            raw_hashes = (qs.get("hashes") or [""])[0].strip()
+            req_hashes = [h.strip().lower() for h in raw_hashes.split(",") if HASH_RE.match(h.strip().lower())]
+            if not req_hashes:
+                self._send_json(400, {"ok": False, "error": "无效的照片哈希列表"})
+                return
+            if MULTI_USER_MODE:
+                if not USER_ID_RE.match(req_user):
+                    self._send_json(400, {"ok": False, "error": "无效的用户名"})
+                    return
+                target_dir = (BACKUP_DIR / req_user).resolve()
+            else:
+                target_dir = BACKUP_DIR.resolve()
+            idx = load_album_index(target_dir)
+            if len(req_hashes) == 1:
+                meta = idx.get(req_hashes[0])
+                if not isinstance(meta, dict) or not meta.get("relPath"):
+                    self._send_json(404, {"ok": False, "error": "照片不存在"})
+                    return
+                fp = (target_dir / meta["relPath"]).resolve()
+                if not str(fp).startswith(str(target_dir)) or not fp.is_file():
+                    self._send_json(404, {"ok": False, "error": "文件不存在"})
+                    return
+                raw = fp.read_bytes()
+                fname = os.path.basename(meta.get("name") or fp.name).replace('"', '')
+                self.send_response(200)
+                self._write_cors_headers()
+                self.send_header("Content-Type", meta.get("mime") or "application/octet-stream")
+                self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+                return
+
+            buf = io.BytesIO()
+            used_names = set()
+            with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+                for h in req_hashes[:100]:
+                    meta = idx.get(h)
+                    if not isinstance(meta, dict) or not meta.get("relPath"):
+                        continue
+                    fp = (target_dir / meta["relPath"]).resolve()
+                    if not str(fp).startswith(str(target_dir)) or not fp.is_file():
+                        continue
+                    arc = f"{meta.get('bucket') or 'Other'}/{os.path.basename(meta.get('name') or fp.name)}"
+                    if arc in used_names:
+                        arc = f"{meta.get('bucket') or 'Other'}/{h[:8]}_{os.path.basename(meta.get('name') or fp.name)}"
+                    used_names.add(arc)
+                    zf.write(fp, arc)
+            zbytes = buf.getvalue()
+            self.send_response(200)
+            self._write_cors_headers()
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", f'attachment; filename="{req_user}-photos-{len(used_names)}.zip"')
+            self.send_header("Content-Length", str(len(zbytes)))
+            self.end_headers()
+            self.wfile.write(zbytes)
             return
 
         # 管理员只读接口：读取指定用户的相册目录清单与同步配置
@@ -1278,6 +1378,31 @@ class BackupHandler(BaseHTTPRequestHandler):
                     REMOTE_RESULTS[user_id] = res_buf[-100:]
                 save_remote_state(user_id, save_results=True)
             self._send_json(200, {"ok": True})
+            return
+
+        # 客户端上报相册缩略图浏览页：POST /api/backup/album/browse/upload
+        if path in ("/api/backup/album/browse/upload", "/album/browse/upload"):
+            body = self._read_body(4 * 1024 * 1024)
+            if body is None:
+                return
+            try:
+                meta = json.loads(body.decode("utf-8"))
+                if not isinstance(meta, dict) or not isinstance(meta.get("items"), list):
+                    raise ValueError("invalid")
+            except Exception:
+                self._send_json(400, {"ok": False, "error": "无效的缩略图数据"})
+                return
+            browse_obj = {
+                "bucket": str(meta.get("bucket") or "")[:64],
+                "offset": int(meta.get("offset", 0) or 0),
+                "limit": int(meta.get("limit", 40) or 40),
+                "total": int(meta.get("total", 0) or 0),
+                "items": meta.get("items")[:60],
+                "updatedAt": int(datetime.datetime.now().timestamp() * 1000),
+                "updatedTime": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            _atomic_write_json(user_dir / "album_browse_cache.json", browse_obj)
+            self._send_json(200, {"ok": True, "count": len(browse_obj["items"])})
             return
 
         # 客户端上报相册实时同步进度：POST /api/backup/album/progress
