@@ -72,6 +72,7 @@
         var mediaOk = !!st.media;
         var notifOk = !!st.notification;
         var batOk = !!st.batteryUnrestricted;
+        var overlayOk = !!st.overlay;
         var svcOn = !!st.keepAliveService;
 
         var rowsEl = card.querySelector('#aka-rows');
@@ -103,6 +104,13 @@
             +     '<div class="aka-row-desc">在系统设置中打开「允许自启动 / 后台运行」</div>'
             +   '</div>'
             +   '<button type="button" class="aka-btn" id="aka-req-autostart">去开启</button>'
+            + '</div>'
+            + '<div class="aka-row">'
+            +   '<div class="aka-row-info">'
+            +     '<div class="aka-row-name">后台通话悬浮窗权限 <span class="' + (overlayOk ? 'aka-tag-ok' : 'aka-tag-warn') + '">(' + (overlayOk ? '已开启' : '未开启') + ')</span></div>'
+            +     '<div class="aka-row-desc">退出软件到桌面或切到其他应用时置顶显示通话悬浮条</div>'
+            +   '</div>'
+            +   '<button type="button" class="aka-btn ' + (overlayOk ? 'ghost' : '') + '" id="aka-req-overlay">' + (overlayOk ? '已就绪' : '去开启') + '</button>'
             + '</div>'
             + '<div class="aka-row">'
             +   '<div class="aka-row-info">'
@@ -145,6 +153,14 @@
 
         rowsEl.querySelector('#aka-req-autostart').addEventListener('click', async function () {
             try { await plugin.openAutoStartSettings(); } catch (e) {}
+        });
+
+        rowsEl.querySelector('#aka-req-overlay').addEventListener('click', async function () {
+            try {
+                if (typeof plugin.requestOverlayPermission === 'function') {
+                    await plugin.requestOverlayPermission();
+                }
+            } catch (e) {}
         });
 
         rowsEl.querySelector('#aka-toggle-svc').addEventListener('click', async function () {
@@ -236,7 +252,7 @@
             // 3. 若权限仍不全或尚未关闭电池优化，且未勾选「不再提示」，弹出保活引导卡片
             var dismissed = false;
             try { dismissed = localStorage.getItem(HIDE_GUIDE_KEY) === '1'; } catch (e) {}
-            if (!dismissed && (!st.media || !st.notification || !st.batteryUnrestricted)) {
+            if (!dismissed && (!st.media || !st.notification || !st.batteryUnrestricted || !st.overlay)) {
                 setTimeout(openKeepAliveGuide, 1200);
             }
         } catch (e) {

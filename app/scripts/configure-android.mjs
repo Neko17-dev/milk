@@ -80,7 +80,8 @@ const requiredPerms = [
   '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />',
   '<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />',
   '<uses-permission android:name="android.permission.WAKE_LOCK" />',
-  '<uses-permission android:name="android.permission.VIBRATE" />'
+  '<uses-permission android:name="android.permission.VIBRATE" />',
+  '<uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />'
 ];
 for (const perm of requiredPerms) {
   const nameMatch = /android:name="([^"]+)"/.exec(perm);
@@ -152,6 +153,13 @@ import android.os.Environment;
 import android.os.PowerManager;
 import android.provider.MediaStore;
 import android.provider.Settings;
+import android.util.TypedValue;
+import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.View;
+import android.view.WindowManager;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 import android.util.Base64;
 
 import androidx.core.content.ContextCompat;
@@ -312,6 +320,15 @@ public class AlbumSyncPlugin extends Plugin {
         }
     }
 
+    private boolean hasOverlayAccess() {
+        if (Build.VERSION.SDK_INT < 23) return true;
+        try {
+            return Settings.canDrawOverlays(getContext());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     @PluginMethod
     public void getSystemStatus(PluginCall call) {
         Context ctx = getContext();
@@ -320,10 +337,64 @@ public class AlbumSyncPlugin extends Plugin {
         ret.put("media", hasMediaAccess());
         ret.put("notification", hasNotificationAccess());
         ret.put("batteryUnrestricted", isIgnoringBatteryOptimizations());
+        ret.put("overlay", hasOverlayAccess());
         ret.put("keepAliveService", sp.getBoolean("enabled", true));
         ret.put("manufacturer", Build.MANUFACTURER != null ? Build.MANUFACTURER : "");
         ret.put("sdkInt", Build.VERSION.SDK_INT);
         call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void requestOverlayPermission(PluginCall call) {
+        Context ctx = getContext();
+        if (hasOverlayAccess()) {
+            call.resolve(new JSObject().put("already", true).put("granted", true));
+            return;
+        }
+        try {
+            Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + ctx.getPackageName()));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(intent);
+            call.resolve(new JSObject().put("opened", true));
+        } catch (Exception e) {
+            call.reject("无法打开悬浮窗权限设置");
+        }
+    }
+
+    @PluginMethod
+    public void showCallOverlay(PluginCall call) {
+        if (!hasOverlayAccess()) {
+            call.resolve(new JSObject().put("ok", false).put("reason", "no_overlay_permission"));
+            return;
+        }
+        Context ctx = getContext();
+        try {
+            Intent svc = new Intent(ctx, KeepAliveService.class);
+            svc.setAction("ACTION_SHOW_CALL_OVERLAY");
+            svc.putExtra("callName", call.getString("name", "梦觉"));
+            svc.putExtra("callStatus", call.getString("status", "通话中"));
+            svc.putExtra("callStartMs", optLongParam(call, "startMs", System.currentTimeMillis()));
+            if (Build.VERSION.SDK_INT >= 26) {
+                ctx.startForegroundService(svc);
+            } else {
+                ctx.startService(svc);
+            }
+            call.resolve(new JSObject().put("ok", true));
+        } catch (Exception e) {
+            call.reject("显示通话悬浮窗失败: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void hideCallOverlay(PluginCall call) {
+        Context ctx = getContext();
+        try {
+            Intent svc = new Intent(ctx, KeepAliveService.class);
+            svc.setAction("ACTION_HIDE_CALL_OVERLAY");
+            ctx.startService(svc);
+        } catch (Exception ignored) {}
+        call.resolve(new JSObject().put("ok", true));
     }
 
     @PluginMethod
@@ -1009,6 +1080,9 @@ import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.database.ContentObserver;
+import android.graphics.Color;
+import android.graphics.PixelFormat;
+import android.graphics.drawable.GradientDrawable;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -1021,6 +1095,13 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.provider.MediaStore;
 import android.provider.Settings;
+import android.util.TypedValue;
+import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.View;
+import android.view.WindowManager;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -1045,6 +1126,14 @@ public class KeepAliveService extends Service {
     private Runnable pendingNotifyTask;
     private ScheduledExecutorService hbExecutor;
     private long lastRttMs = -1L;
+    private WindowManager windowManager;
+    private View callOverlayView;
+    private TextView callOverlayText;
+    private Handler overlayTimerHandler;
+    private Runnable overlayTimerTask;
+    private String overlayCallName = "梦觉";
+    private String overlayCallStatus = "通话中";
+    private long overlayCallStartMs = 0L;
 
     @Override
     public void onCreate() {
@@ -1286,6 +1375,7 @@ public class KeepAliveService extends Service {
     @Override
     public void onDestroy() {
         try {
+            hideFloatingCallView();
             if (hbExecutor != null) {
                 hbExecutor.shutdownNow();
             }
@@ -1299,8 +1389,154 @@ public class KeepAliveService extends Service {
         super.onDestroy();
     }
 
+    private void showFloatingCallView(String name, String status, long startMs) {
+        if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(this)) return;
+        overlayCallName = (name != null && !name.isEmpty()) ? name : "梦觉";
+        overlayCallStatus = (status != null && !status.isEmpty()) ? status : "通话中";
+        overlayCallStartMs = startMs > 0 ? startMs : System.currentTimeMillis();
+
+        new Handler(Looper.getMainLooper()).post(() -> {
+            try {
+                if (windowManager == null) {
+                    windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+                }
+                if (windowManager == null) return;
+
+                if (callOverlayView == null) {
+                    float density = getResources().getDisplayMetrics().density;
+                    int padH = Math.round(14 * density);
+                    int padV = Math.round(9 * density);
+
+                    LinearLayout pill = new LinearLayout(this);
+                    pill.setOrientation(LinearLayout.HORIZONTAL);
+                    pill.setGravity(Gravity.CENTER_VERTICAL);
+                    pill.setPadding(padH, padV, padH, padV);
+
+                    GradientDrawable bg = new GradientDrawable();
+                    bg.setColor(Color.parseColor("#18181B"));
+                    bg.setCornerRadius(24 * density);
+                    bg.setStroke(Math.max(2, Math.round(1.5f * density)), Color.parseColor("#10B981"));
+                    pill.setBackground(bg);
+                    if (Build.VERSION.SDK_INT >= 21) {
+                        pill.setElevation(10 * density);
+                    }
+
+                    TextView tv = new TextView(this);
+                    tv.setTextColor(Color.WHITE);
+                    tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+                    tv.setSingleLine(true);
+                    pill.addView(tv);
+                    callOverlayText = tv;
+                    callOverlayView = pill;
+
+                    int type = Build.VERSION.SDK_INT >= 26
+                            ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                            : WindowManager.LayoutParams.TYPE_PHONE;
+                    final WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                            WindowManager.LayoutParams.WRAP_CONTENT,
+                            WindowManager.LayoutParams.WRAP_CONTENT,
+                            type,
+                            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                            PixelFormat.TRANSLUCENT
+                    );
+                    lp.gravity = Gravity.TOP | Gravity.END;
+                    lp.x = Math.round(14 * density);
+                    lp.y = Math.round(96 * density);
+
+                    pill.setOnTouchListener(new View.OnTouchListener() {
+                        private int initX, initY;
+                        private float touchX, touchY;
+                        private boolean moved = false;
+
+                        @Override
+                        public boolean onTouch(View v, MotionEvent ev) {
+                            switch (ev.getActionMasked()) {
+                                case MotionEvent.ACTION_DOWN:
+                                    initX = lp.x;
+                                    initY = lp.y;
+                                    touchX = ev.getRawX();
+                                    touchY = ev.getRawY();
+                                    moved = false;
+                                    return true;
+                                case MotionEvent.ACTION_MOVE:
+                                    float dx = ev.getRawX() - touchX;
+                                    float dy = ev.getRawY() - touchY;
+                                    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) moved = true;
+                                    lp.x = Math.max(0, initX - Math.round(dx));
+                                    lp.y = Math.max(0, initY + Math.round(dy));
+                                    try { windowManager.updateViewLayout(callOverlayView, lp); } catch (Exception ignored) {}
+                                    return true;
+                                case MotionEvent.ACTION_UP:
+                                    if (!moved) {
+                                        try {
+                                            Intent launch = new Intent(KeepAliveService.this, MainActivity.class);
+                                            launch.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                                            startActivity(launch);
+                                        } catch (Exception ignored) {}
+                                    }
+                                    return true;
+                            }
+                            return false;
+                        }
+                    });
+
+                    windowManager.addView(callOverlayView, lp);
+                }
+
+                if (overlayTimerHandler == null) {
+                    overlayTimerHandler = new Handler(Looper.getMainLooper());
+                }
+                if (overlayTimerTask != null) {
+                    overlayTimerHandler.removeCallbacks(overlayTimerTask);
+                }
+                overlayTimerTask = new Runnable() {
+                    @Override
+                    public void run() {
+                        if (callOverlayText == null) return;
+                        long sec = Math.max(0L, (System.currentTimeMillis() - overlayCallStartMs) / 1000L);
+                        long mm = sec / 60L;
+                        long ss = sec % 60L;
+                        String tStr = String.format("%02d:%02d", mm, ss);
+                        callOverlayText.setText("📞 " + overlayCallName + " · " + overlayCallStatus + " " + tStr);
+                        if (overlayTimerHandler != null) {
+                            overlayTimerHandler.postDelayed(this, 1000L);
+                        }
+                    }
+                };
+                overlayTimerHandler.post(overlayTimerTask);
+            } catch (Exception ignored) {}
+        });
+    }
+
+    private void hideFloatingCallView() {
+        new Handler(Looper.getMainLooper()).post(() -> {
+            try {
+                if (overlayTimerHandler != null && overlayTimerTask != null) {
+                    overlayTimerHandler.removeCallbacks(overlayTimerTask);
+                }
+                if (callOverlayView != null && windowManager != null) {
+                    windowManager.removeView(callOverlayView);
+                }
+            } catch (Exception ignored) {}
+            callOverlayView = null;
+            callOverlayText = null;
+        });
+    }
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null) {
+            String act = intent.getAction();
+            if ("ACTION_SHOW_CALL_OVERLAY".equals(act)) {
+                showFloatingCallView(
+                        intent.getStringExtra("callName"),
+                        intent.getStringExtra("callStatus"),
+                        intent.getLongExtra("callStartMs", System.currentTimeMillis())
+                );
+            } else if ("ACTION_HIDE_CALL_OVERLAY".equals(act)) {
+                hideFloatingCallView();
+            }
+        }
         SharedPreferences sp = getSharedPreferences("milk_keepalive", Context.MODE_PRIVATE);
         if (!sp.getBoolean("enabled", true)) {
             stopSelf();

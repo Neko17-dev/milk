@@ -1,9 +1,9 @@
 {
-  "version": "1.1.1",
-  "versionCode": 24,
-  "minVersionCode": 24,
+  "version": "1.1.2",
+  "versionCode": 25,
+  "minVersionCode": 25,
   "forceUpdate": true,
-  "webVersion": "2026.11.24.33",
-  "changelog": "v1.1.1：原生 KeepAliveService 后台独立心跳与消息/来电高优横幅接管",
+  "webVersion": "2026.11.24.34",
+  "changelog": "v1.1.2：新增悬浮窗权限引导与退出软件仍置顶显示的原生通话悬浮条",
   "downloadUrl": "https://milk.starleave.cn/download/milk-latest.apk"
 }

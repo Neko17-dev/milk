@@ -653,6 +653,7 @@ html:not([data-theme="dark"])[data-color-theme="black-white"] .message-sent{
         localStorage.setItem(KEY_POS,  JSON.stringify(S.pos));
         localStorage.setItem(KEY_SIZE, JSON.stringify(S.size));
         sendCallMsg(dur);
+        syncNativeCallOverlay(false);
         if (typeof showNotification === 'function' && dur > 1500)
             showNotification(`通话结束 · ${fmt(dur)}`, 'info', 3000);
         else if (typeof showNotification === 'function' && dur <= 1500 && dur > 0)
@@ -704,18 +705,48 @@ html:not([data-theme="dark"])[data-color-theme="black-white"] .message-sent{
         }, ms);
     }
 
+    function syncNativeCallOverlay(show) {
+        try {
+            var p = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.AlbumSync;
+            if (!p) return;
+            if (show && S.active && typeof p.showCallOverlay === 'function') {
+                p.showCallOverlay({
+                    name: getName(),
+                    status: S.startTime ? '通话中' : '呼叫中',
+                    startMs: S.startTime || Date.now()
+                }).catch(function () {});
+            } else if (!show && typeof p.hideCallOverlay === 'function') {
+                p.hideCallOverlay().catch(function () {});
+            }
+        } catch (e) {}
+    }
+
     function minimizeWindow() {
         S.minimized = true;
         document.getElementById('call-window')?.classList.remove('visible');
         const pill = document.getElementById('call-mini-pill');
         if (pill) { pill.classList.add('visible'); positionPill(); }
+        if (document.hidden) syncNativeCallOverlay(true);
     }
     function restoreWindow() {
         S.minimized = false;
         const win = document.getElementById('call-window');
         if (win) { positionWindow(); win.classList.add('visible'); }
         document.getElementById('call-mini-pill')?.classList.remove('visible');
+        syncNativeCallOverlay(false);
     }
+
+    document.addEventListener('visibilitychange', function () {
+        if (!S.active) {
+            syncNativeCallOverlay(false);
+            return;
+        }
+        if (document.hidden) {
+            syncNativeCallOverlay(true);
+        } else {
+            syncNativeCallOverlay(false);
+        }
+    });
 
     function toggleImmersive() {
         S.immersive = !S.immersive;
