@@ -186,15 +186,42 @@
 
 (function() {
     var KEY = 'keepaliveAudioEnabled';
-    var SRC = 'https://storage.linkship.net/shared/audio/0db914b9-a94f-4f58-9759-7e95bf58778c.mp3';
+    var _silentBlobUrl = null;
     var _audio = null;
     var _unlockBound = false;
+
+    function _getSilentWavUrl() {
+        if (_silentBlobUrl) return _silentBlobUrl;
+        // 生成 0.5 秒 8kHz 8-bit 单声道静音 WAV，免外部网络下载（0ms 加载且离线可用）
+        var sampleRate = 8000;
+        var numSamples = 4000;
+        var buf = new ArrayBuffer(44 + numSamples);
+        var view = new DataView(buf);
+        function writeStr(off, s) {
+            for (var i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i));
+        }
+        writeStr(0, 'RIFF');
+        view.setUint32(4, 36 + numSamples, true);
+        writeStr(8, 'WAVEfmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, 1, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate, true);
+        view.setUint16(32, 1, true);
+        view.setUint16(34, 8, true);
+        writeStr(36, 'data');
+        view.setUint32(40, numSamples, true);
+        for (var i = 0; i < numSamples; i++) view.setUint8(44 + i, 128);
+        _silentBlobUrl = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+        return _silentBlobUrl;
+    }
 
     function _get() { return localStorage.getItem(KEY) === 'true'; }
 
     function _createAudio() {
         if (_audio) return _audio;
-        _audio = new Audio(SRC);
+        _audio = new Audio(_getSilentWavUrl());
         _audio.loop   = true;
         _audio.volume = 0.01;
         _audio.preload = 'auto';
