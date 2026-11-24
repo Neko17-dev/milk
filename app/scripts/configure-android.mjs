@@ -879,6 +879,7 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.ServiceInfo;
 import android.database.ContentObserver;
 import android.net.Uri;
 import android.os.Build;
@@ -949,10 +950,20 @@ public class KeepAliveService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        SharedPreferences sp = getSharedPreferences("milk_keepalive", Context.MODE_PRIVATE);
+        if (!sp.getBoolean("enabled", true)) {
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+
         Intent launch = new Intent(this, MainActivity.class);
         launch.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         int piFlags = Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0;
         PendingIntent pi = PendingIntent.getActivity(this, 0, launch, piFlags);
+
+        Intent restore = new Intent(this, KeepAliveService.class);
+        restore.setAction("RESTORE_KEEPALIVE");
+        PendingIntent delPi = PendingIntent.getService(this, 1, restore, piFlags);
 
         Notification.Builder builder = Build.VERSION.SDK_INT >= 26
                 ? new Notification.Builder(this, CHANNEL_ID)
@@ -962,9 +973,14 @@ public class KeepAliveService extends Service {
                 .setContentText("保持消息提醒与自动同步连接")
                 .setSmallIcon(android.R.drawable.stat_notify_chat)
                 .setOngoing(true)
+                .setDeleteIntent(delPi)
                 .setContentIntent(pi);
 
-        startForeground(NOTIF_ID, builder.build());
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(NOTIF_ID, builder.build(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+        } else {
+            startForeground(NOTIF_ID, builder.build());
+        }
         return START_STICKY;
     }
 

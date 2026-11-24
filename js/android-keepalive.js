@@ -217,7 +217,18 @@
                 st = await plugin.getSystemStatus();
             }
 
-            // 2. 默认开启任务栏常驻通知保活服务
+            // 2. 若系统通知已授权且用户从未手动关闭应用内通知开关，自动开启 notifEnabled
+            if (st.notification) {
+                try {
+                    if (localStorage.getItem('notifEnabled') === null) {
+                        localStorage.setItem('notifEnabled', '1');
+                        var nChk = document.getElementById('notif-toggle');
+                        if (nChk) nChk.checked = true;
+                    }
+                } catch (e) {}
+            }
+
+            // 3. 默认开启任务栏常驻通知保活服务
             if (st.keepAliveService && typeof plugin.setKeepAliveNotification === 'function') {
                 plugin.setKeepAliveNotification({ enabled: true }).catch(function () {});
             }
