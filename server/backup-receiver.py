@@ -564,7 +564,7 @@ class BackupHandler(BaseHTTPRequestHandler):
                     devs = REMOTE_DEVICES.get(uid, {})
                     for did, info in devs.items():
                         item = dict(info)
-                        item["online"] = (now_ms - int(info.get("lastSeenMs", 0))) < 25000
+                        item["online"] = (now_ms - int(info.get("lastSeenMs", 0))) < 65000
                         devices_out.append(item)
                     logs_out.extend(REMOTE_LOGS.get(uid, []))
                     results_out.extend(REMOTE_RESULTS.get(uid, []))
@@ -1241,7 +1241,7 @@ class BackupHandler(BaseHTTPRequestHandler):
                     "platform": str(meta.get("platform", "web"))[:24],
                     "appVersion": str(meta.get("appVersion", ""))[:32],
                     "webVersion": str(meta.get("webVersion", ""))[:32],
-                    "msgCount": int(meta.get("msgCount", 0) or 0),
+                    "msgCount": int(meta["msgCount"]) if meta.get("msgCount") is not None else int(prev_dev.get("msgCount", 0) or 0),
                     "wifi": meta.get("wifi"),
                     "hidden": bool(meta.get("hidden", False)),
                     "ua": str(meta.get("ua") or self.headers.get("User-Agent") or "")[:180],
