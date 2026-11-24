@@ -115,7 +115,7 @@ def build_web_bundle_zip() -> Tuple[str, bytes]:
                 fp = root_dir / single
                 if fp.is_file():
                     zf.write(fp, single)
-            for folder in ("css", "js", "icons"):
+            for folder in ("css", "js", "vendor", "icons"):
                 d = root_dir / folder
                 if not d.is_dir():
                     continue
