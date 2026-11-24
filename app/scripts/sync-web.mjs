@@ -36,6 +36,7 @@ const itemsToCopy = [
   'manifest.json',
   'css',
   'js',
+  'vendor',
   'icons'
 ];
 

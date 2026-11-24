@@ -1,10 +1,17 @@
-const CACHE_NAME = 'chuanxun-v42';
+const CACHE_NAME = 'chuanxun-v43';
 
 // 需要预缓存的核心资源（离线可用）
 const PRECACHE_URLS = [
   '/',
   '/index.html',
   '/css/styles.css',
+  '/vendor/localforage.min.js',
+  '/vendor/jszip.min.js',
+  '/vendor/fontawesome/css/all.min.css',
+  '/vendor/fontawesome/webfonts/fa-solid-900.woff2',
+  '/vendor/fontawesome/webfonts/fa-regular-400.woff2',
+  '/vendor/fontawesome/webfonts/fa-brands-400.woff2',
+  '/vendor/fontawesome/webfonts/fa-v4compatibility.woff2',
   '/js/config.js',
   '/js/utils.js',
   '/js/state.js',

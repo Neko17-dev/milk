@@ -2378,7 +2378,10 @@ const savedCover = safeGetItem(APP_PREFIX + 'playerCover');
         document.getElementById('music-title').innerText = song.title;
         document.getElementById('music-subtitle').innerText = song.sub;
         
-        if (song.url) audio.src = song.url;
+        if (song.url) {
+            if (!isPlaying) audio.preload = 'none';
+            audio.src = song.url;
+        }
         updatePlaylistHighlight();
     }
 
