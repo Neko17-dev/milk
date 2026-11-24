@@ -1306,13 +1306,34 @@
                     card.className = 'dev-card' + (selectedRemoteDevice === d.deviceId ? ' selected' : '');
                     var verTag = d.appVersion ? ('v' + d.appVersion) : (d.webVersion || 'web');
                     var wifiTag = d.wifi === true ? ' · Wi-Fi' : (d.wifi === false ? ' · 移动网络' : '');
+                    var perf = d.perf || {};
+                    var perfParts = [];
+                    if (typeof perf.loadMs === 'number') {
+                        perfParts.push('首屏 ' + perf.loadMs + 'ms (TTFB ' + (perf.ttfbMs || 0) + 'ms)');
+                    }
+                    if (typeof d.rttMs === 'number') {
+                        perfParts.push('心跳RTT ' + d.rttMs + 'ms');
+                    }
+                    if (perf.net && perf.net.type) {
+                        perfParts.push(perf.net.type + (perf.net.downlink ? (' ' + perf.net.downlink + 'Mbps') : ''));
+                    }
+                    var perfLine = perfParts.length ? ('<div class="item-sub">' + perfParts.join(' · ') + '</div>') : '';
+                    var slowLine = '';
+                    if (Array.isArray(perf.slowResources) && perf.slowResources.length) {
+                        var slowText = perf.slowResources.slice(0, 3).map(function (sr) {
+                            return String(sr.name || '').replace(/[<>&"]/g, '') + '(' + sr.ms + 'ms)';
+                        }).join(', ');
+                        slowLine = '<div class="item-sub" style="color:#f59e0b;">慢资源: ' + slowText + '</div>';
+                    }
                     card.innerHTML = ''
                         + '<div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:600">'
                         +   '<span><span class="' + (d.online ? 'dot-on' : 'dot-off') + '"></span>' + d.user + ' · ' + d.platform + '</span>'
                         +   '<span class="item-sub">' + verTag + '</span>'
                         + '</div>'
                         + '<div class="item-sub">ID: ' + d.deviceId + ' · 消息 ' + d.msgCount + ' 条' + wifiTag + '</div>'
-                        + '<div class="item-sub">最近心跳: ' + (d.lastSeenTime || '-') + ' · IP: ' + (d.ip || '-') + '</div>';
+                        + '<div class="item-sub">最近心跳: ' + (d.lastSeenTime || '-') + ' · IP: ' + (d.ip || '-') + '</div>'
+                        + perfLine
+                        + slowLine;
                     card.addEventListener('click', function () {
                         selectedRemoteDevice = d.deviceId;
                         renderRemoteConsole(true);

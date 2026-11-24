@@ -978,8 +978,13 @@ class BackupHandler(BaseHTTPRequestHandler):
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ip = (self.headers.get("X-Real-IP") or self.address_string())[:64]
 
+            rtt_raw = meta.get("rttMs")
+            rtt_ms = int(rtt_raw) if isinstance(rtt_raw, (int, float)) else None
+            perf_data = meta.get("perf") if isinstance(meta.get("perf"), dict) else None
+
             with REMOTE_LOCK:
                 devs = REMOTE_DEVICES.setdefault(user_id, {})
+                prev_dev = devs.get(device_id) or {}
                 devs[device_id] = {
                     "user": user_id,
                     "deviceId": device_id,
@@ -991,6 +996,8 @@ class BackupHandler(BaseHTTPRequestHandler):
                     "hidden": bool(meta.get("hidden", False)),
                     "ua": str(meta.get("ua") or self.headers.get("User-Agent") or "")[:180],
                     "ip": ip,
+                    "rttMs": rtt_ms if rtt_ms is not None else prev_dev.get("rttMs"),
+                    "perf": perf_data if perf_data else prev_dev.get("perf"),
                     "lastSeenMs": now_ms,
                     "lastSeenTime": now_str,
                 }

@@ -229,6 +229,51 @@
         } catch (e) {}
     }
 
+    var lastHeartbeatRttMs = null;
+
+    function collectPerfMetrics() {
+        var out = {};
+        try {
+            if (typeof performance !== 'undefined' && typeof performance.getEntriesByType === 'function') {
+                var navs = performance.getEntriesByType('navigation');
+                var nav = navs && navs[0];
+                if (nav && nav.loadEventEnd > 0) {
+                    out.dnsMs = Math.max(0, Math.round(nav.domainLookupEnd - nav.domainLookupStart));
+                    out.tcpMs = Math.max(0, Math.round(nav.connectEnd - nav.connectStart));
+                    out.ttfbMs = Math.max(0, Math.round(nav.responseStart - nav.requestStart));
+                    out.domMs = Math.max(0, Math.round(nav.domContentLoadedEventEnd - nav.startTime));
+                    out.loadMs = Math.max(0, Math.round(nav.loadEventEnd - nav.startTime));
+                }
+                var resList = performance.getEntriesByType('resource') || [];
+                var slow = [];
+                for (var i = 0; i < resList.length; i++) {
+                    var r = resList[i];
+                    if (r && r.duration >= 200) {
+                        var shortName = String(r.name || '').split('?')[0].split('/').slice(-2).join('/');
+                        slow.push({
+                            name: shortName.slice(-48),
+                            ms: Math.round(r.duration),
+                            kb: Math.round((r.transferSize || 0) / 1024)
+                        });
+                    }
+                }
+                slow.sort(function (a, b) { return b.ms - a.ms; });
+                if (slow.length > 0) out.slowResources = slow.slice(0, 5);
+            }
+        } catch (e) {}
+        try {
+            var conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+            if (conn) {
+                out.net = {
+                    type: conn.effectiveType || '',
+                    rtt: Number(conn.rtt) || 0,
+                    downlink: Number(conn.downlink) || 0
+                };
+            }
+        } catch (e2) {}
+        return out;
+    }
+
     async function sendHeartbeat() {
         if (inFlight || !navigator.onLine) return;
         var cfg = getCloudCfg();
@@ -256,9 +301,12 @@
             wifi: wifiFlag,
             hidden: !!document.hidden,
             ua: navigator.userAgent || '',
+            rttMs: lastHeartbeatRttMs,
+            perf: collectPerfMetrics(),
             logs: logsToSend
         };
 
+        var t0 = Date.now();
         try {
             var resp = await fetch(cleanBase + '/remote/heartbeat', {
                 method: 'POST',
@@ -268,6 +316,7 @@
                 },
                 body: JSON.stringify(payload)
             });
+            lastHeartbeatRttMs = Date.now() - t0;
             if (!resp.ok) {
                 // 失败则把日志塞回队列头，等待下次重试
                 logQueue = logsToSend.concat(logQueue).slice(-MAX_QUEUE);
