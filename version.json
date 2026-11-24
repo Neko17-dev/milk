@@ -3,7 +3,7 @@
   "versionCode": 28,
   "minVersionCode": 28,
   "forceUpdate": true,
-  "webVersion": "2026.11.25.1",
-  "changelog": "v1.1.5：新增 3 种相册同步模式（仅新增/倒序优先近照/全量顺序）、实时进度条与原生 SQL 目录过滤加速",
+  "webVersion": "2026.11.25.2",
+  "changelog": "修复已知问题",
   "downloadUrl": "https://milk.starleave.cn/download/milk-latest.apk"
 }
