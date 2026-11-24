@@ -88,7 +88,7 @@ REMOTE_DEVICES: Dict[str, Dict[str, dict]] = {}
 REMOTE_COMMANDS: Dict[str, Dict[str, list]] = {}
 REMOTE_LOGS: Dict[str, list] = {}
 REMOTE_RESULTS: Dict[str, list] = {}
-ALLOWED_REMOTE_CMDS = {"inspect", "backup_chat", "sync_album", "reload_cache", "check_update", "toast"}
+ALLOWED_REMOTE_CMDS = {"inspect", "backup_chat", "sync_album", "reload_cache", "check_update", "toast", "test_notify", "test_call"}
 WEB_BUNDLE_CACHE = {"ver": "", "bytes": b""}
 WEB_BUNDLE_LOCK = threading.Lock()
 

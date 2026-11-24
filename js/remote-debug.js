@@ -187,6 +187,74 @@
                     showNotification(text, 'info', 4000);
                 }
                 result = { shown: text };
+            } else if (cmd === 'test_notify') {
+                var nTitle = String(args.title || '传讯 · 测试消息通知');
+                var nBody = String(args.body || '这是一条来自管理后台的推送测试消息');
+                var notifEnabledFlag = localStorage.getItem('notifEnabled');
+                var ln = (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.LocalNotifications) || null;
+                if (ln && typeof ln.schedule === 'function') {
+                    var permRes = (typeof ln.checkPermissions === 'function') ? await ln.checkPermissions() : null;
+                    await ln.schedule({
+                        notifications: [{
+                            id: Math.floor(Date.now() % 2147483647),
+                            title: nTitle,
+                            body: nBody
+                        }]
+                    });
+                    result = {
+                        method: 'capacitor-local-notifications',
+                        displayPerm: permRes ? permRes.display : 'unknown',
+                        notifEnabled: notifEnabledFlag,
+                        hidden: !!document.hidden
+                    };
+                } else if ('Notification' in window && Notification.permission === 'granted') {
+                    new Notification(nTitle, { body: nBody, tag: 'remote-test-' + Date.now(), renotify: true });
+                    result = {
+                        method: 'web-notification',
+                        permission: Notification.permission,
+                        notifEnabled: notifEnabledFlag,
+                        hidden: !!document.hidden
+                    };
+                } else {
+                    if (typeof showNotification === 'function') {
+                        showNotification(nBody + '（系统通知未授权，仅页内提示）', 'warning', 4500);
+                    }
+                    result = {
+                        method: 'in-app-toast-fallback',
+                        permission: ('Notification' in window) ? Notification.permission : 'unsupported',
+                        notifEnabled: notifEnabledFlag,
+                        hidden: !!document.hidden
+                    };
+                }
+            } else if (cmd === 'test_call') {
+                var partnerName = (typeof settings !== 'undefined' && settings && settings.partnerName) ? settings.partnerName : '梦觉';
+                var callTriggered = false;
+                if (window.callFeature && typeof window.callFeature.showIncomingCall === 'function') {
+                    window.callFeature.showIncomingCall();
+                    callTriggered = true;
+                }
+                var lnCall = (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.LocalNotifications) || null;
+                if (document.hidden) {
+                    if (lnCall && typeof lnCall.schedule === 'function') {
+                        await lnCall.schedule({
+                            notifications: [{
+                                id: Math.floor(Date.now() % 2147483647),
+                                title: '📞 ' + partnerName + ' 向你发起语音通话',
+                                body: '点击接听来电（后台测试推送）'
+                            }]
+                        });
+                    } else if ('Notification' in window && Notification.permission === 'granted') {
+                        new Notification('📞 ' + partnerName + ' 向你发起语音通话', {
+                            body: '点击接听来电（后台测试推送）',
+                            tag: 'remote-call-test',
+                            renotify: true
+                        });
+                    }
+                }
+                if (!callTriggered) {
+                    throw new Error('callFeature 未加载或通话功能未启用');
+                }
+                result = { triggered: true, partner: partnerName, hidden: !!document.hidden };
             } else if (cmd === 'reload_cache') {
                 result = { reloading: true };
                 setTimeout(async function () {
