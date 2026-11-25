@@ -736,7 +736,8 @@
                 var data = JSON.parse(raw || '{}');
                 var remoteVer = Number(data && data.configVersion) || 0;
                 var localVer = parseInt(localStorage.getItem(KEYS.configVer) || '0', 10) || 0;
-                if (remoteVer > localVer && data.enabled) {
+                if (remoteVer > localVer && (data.enabled || data.thumbAutoSync !== false)) {
+                    localStorage.setItem(KEYS.configVer, String(remoteVer));
                     runSync({ manual: false });
                 }
             } catch (e) { }

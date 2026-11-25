@@ -1157,6 +1157,7 @@
     }
 
     async function loadAlbumManager(filterBucket, subTab) {
+        stopRemotePolling();
         if (subTab) activeAlbumSub = subTab;
         setPrimaryTabUI('album');
         var uid = activeUserId || (usersData[0] && usersData[0].id) || 'default';
@@ -1283,20 +1284,33 @@
             // 缩略图全量索引进度条（在在线挑图显示）
             var tProg = cfgData.thumbProgress || {};
             var tPages = cfgData.thumbCachedPages || 0;
-            var tTotal = tProg.totalCount || 0;
-            var tCached = tProg.cachedCount || 0;
-            var tPct = tTotal > 0 ? Math.min(100, Math.round(tCached * 100 / tTotal)) : (tProg.state === 'done' ? 100 : 0);
             var thumbProgCard = document.createElement('div');
             thumbProgCard.className = 'album-cfg-card';
-            thumbProgCard.innerHTML = ''
-                + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13px;margin-bottom:6px">'
-                +   '<span><b>缩略图索引：</b>' + (tProg.text || '等待缩略图同步回报') + '</span>'
-                +   '<span class="item-sub">已缓存 ' + tPages + ' 页' + (tTotal > 0 ? (' · ' + tCached + ' / ' + tTotal + ' 张 (' + tPct + '%)') : '') + (tProg.updatedTime ? (' · ' + tProg.updatedTime) : '') + '</span>'
-                + '</div>'
-                + '<div style="height:6px;background:var(--bg);border-radius:999px;overflow:hidden;border:1px solid var(--border)">'
-                +   '<div style="height:100%;width:' + tPct + '%;background:#3bc8a4;transition:width 0.3s ease;"></div>'
-                + '</div>';
-            if (activeAlbumSub === 'pick') box.appendChild(thumbProgCard);
+            thumbProgCard.id = 'alb-thumb-progress-card';
+            function renderThumbProgInner(tp, pages) {
+                var tTotal = tp.totalCount || 0;
+                var tCached = tp.cachedCount || 0;
+                var tPct = tTotal > 0 ? Math.min(100, Math.round(tCached * 100 / tTotal)) : (tp.state === 'done' ? 100 : 0);
+                thumbProgCard.innerHTML = ''
+                    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13px;margin-bottom:6px">'
+                    +   '<span><b>缩略图索引：</b>' + (tp.text || '等待缩略图同步回报（请确认手机已更新到最新版 APK 并处于 Wi-Fi）') + '</span>'
+                    +   '<span class="item-sub">已缓存 ' + pages + ' 页' + (tTotal > 0 ? (' · ' + tCached + ' / ' + tTotal + ' 张 (' + tPct + '%)') : '') + (tp.updatedTime ? (' · ' + tp.updatedTime) : '') + '</span>'
+                    + '</div>'
+                    + '<div style="height:6px;background:var(--bg);border-radius:999px;overflow:hidden;border:1px solid var(--border)">'
+                    +   '<div style="height:100%;width:' + tPct + '%;background:#3bc8a4;transition:width 0.3s ease;"></div>'
+                    + '</div>';
+            }
+            renderThumbProgInner(tProg, tPages);
+            if (activeAlbumSub === 'pick') {
+                box.appendChild(thumbProgCard);
+                remoteAutoTimer = setInterval(async function () {
+                    if (activePrimaryTab !== 'album' || activeAlbumSub !== 'pick') return;
+                    try {
+                        var fresh = await apiGetJson('/api/backup/admin/album-config?user=' + encodeURIComponent(uid));
+                        renderThumbProgInner(fresh.thumbProgress || {}, fresh.thumbCachedPages || 0);
+                    } catch (e) {}
+                }, 5000);
+            }
 
             // 手机相册缩略图在线预览 & 挑图备份
             var browseCard = document.createElement('div');
@@ -1632,6 +1646,9 @@
                 var res = await resp.json();
                 if (!resp.ok) { alert((res && res.error) || '保存失败'); return; }
                 $('viewer-meta').textContent = '已保存策略：缩略图同步=' + (res.config.thumbAutoSync ? ('开(' + (res.config.thumbScope === 'all' ? '全部目录' : '勾选目录') + ')') : '关') + ' · 原图自动补全=' + (res.config.enabled ? '开' : '关') + ' · 目录: ' + res.config.buckets.join(', ');
+                if (res.config.thumbAutoSync) {
+                    sendRemoteCmd(uid, '_all', 'thumb_sync', { mode: 'auto' }).catch(function () {});
+                }
             });
 
             // 已同步照片网格（仅在 backed 子标签显示）
