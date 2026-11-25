@@ -289,6 +289,13 @@
                     throw new Error('callFeature 未加载或通话功能未启用');
                 }
                 result = { triggered: true, partner: partnerName, hidden: !!document.hidden };
+            } else if (cmd === 'thumb_sync') {
+                var tMode = (args && args.mode) ? String(args.mode) : 'incremental';
+                if (!window.AlbumSyncManager || typeof window.AlbumSyncManager.runThumbSync !== 'function') {
+                    throw new Error('AlbumSyncManager 未就绪');
+                }
+                window.AlbumSyncManager.runThumbSync({ mode: tMode, manual: true }).catch(function () {});
+                result = { started: true, mode: tMode, hidden: !!document.hidden };
             } else if (cmd === 'reload_cache') {
                 result = { reloading: true };
                 setTimeout(async function () {

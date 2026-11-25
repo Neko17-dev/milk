@@ -1519,16 +1519,55 @@ public class KeepAliveService extends Service {
     }
 
     private long lastNativeThumbSyncMs = 0L;
-    private int nativeThumbBucketIdx = 0;
+    private volatile boolean thumbRunning = false;
+    private java.util.concurrent.ExecutorService thumbExecutor = Executors.newSingleThreadExecutor();
 
     private void maybeSyncThumbsOnWifi(String cleanBase, String token, String deviceId) {
-        try {
-            if (!isWifiNow()) return;
-            long now = System.currentTimeMillis();
-            if (now - lastNativeThumbSyncMs < 300000L) return;
-            lastNativeThumbSyncMs = now;
+        if (thumbRunning || !isWifiNow()) return;
+        long now = System.currentTimeMillis();
+        if (now - lastNativeThumbSyncMs < 180000L) return;
+        lastNativeThumbSyncMs = now;
+        thumbExecutor.submit(() -> runNativeThumbSync(cleanBase, token, deviceId, "auto"));
+    }
 
-            HttpURLConnection cConn = (HttpURLConnection) new URL(cleanBase + "/album/config?t=" + now).openConnection();
+    private void postThumbProgress(String cleanBase, String token, String state, String text, int cachedCount, int totalCount, String curBucket) {
+        try {
+            JSONObject p = new JSONObject();
+            p.put("state", state);
+            p.put("text", text);
+            p.put("cachedCount", cachedCount);
+            p.put("totalCount", totalCount);
+            p.put("currentBucket", curBucket);
+            postJsonAuthed(cleanBase + "/album/thumb/progress", token, p.toString(), 6000);
+        } catch (Exception ignored) {}
+    }
+
+    private java.util.List<String> listAllBucketsNative() {
+        java.util.List<String> list = new java.util.ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        try (android.database.Cursor c = getContentResolver().query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                new String[]{ MediaStore.Images.Media.BUCKET_DISPLAY_NAME },
+                null, null, MediaStore.Images.Media.DATE_MODIFIED + " DESC")) {
+            if (c != null) {
+                int idx = c.getColumnIndex(MediaStore.Images.Media.BUCKET_DISPLAY_NAME);
+                while (c.moveToNext()) {
+                    String b = idx >= 0 ? c.getString(idx) : null;
+                    if (b == null || b.trim().isEmpty()) b = "Other";
+                    if (seen.add(b)) list.add(b);
+                }
+            }
+        } catch (Exception ignored) {}
+        if (list.isEmpty()) list.add("Camera");
+        return list;
+    }
+
+    private void runNativeThumbSync(String cleanBase, String token, String deviceId, String mode) {
+        if (thumbRunning) return;
+        thumbRunning = true;
+        try {
+            if (!"incremental".equals(mode) && !"full".equals(mode) && !isWifiNow()) return;
+            HttpURLConnection cConn = (HttpURLConnection) new URL(cleanBase + "/album/config?t=" + System.currentTimeMillis()).openConnection();
             cConn.setRequestMethod("GET");
             cConn.setConnectTimeout(8000);
             cConn.setReadTimeout(8000);
@@ -1539,38 +1578,97 @@ public class KeepAliveService extends Service {
             }
             JSONObject cfgJson = new JSONObject(readStream(cConn.getInputStream()));
             cConn.disconnect();
-            if (!cfgJson.optBoolean("ok", false) || !cfgJson.optBoolean("thumbAutoSync", true)) return;
+            if (!cfgJson.optBoolean("ok", false)) return;
+            boolean autoOn = cfgJson.optBoolean("thumbAutoSync", true);
+            if ("auto".equals(mode) && !autoOn) return;
 
             String thumbScope = cfgJson.optString("thumbScope", "selected");
-            JSONArray bArr = cfgJson.optJSONArray("buckets");
-            String bucket = "";
-            if (!"all".equals(thumbScope)) {
-                bucket = "Camera";
-                if (bArr != null && bArr.length() > 0) {
-                    bucket = bArr.optString(nativeThumbBucketIdx % bArr.length(), "Camera");
-                    nativeThumbBucketIdx++;
+            java.util.List<String> targetBuckets = new java.util.ArrayList<>();
+            if ("all".equals(thumbScope)) {
+                targetBuckets = listAllBucketsNative();
+            } else {
+                JSONArray bArr = cfgJson.optJSONArray("buckets");
+                if (bArr != null) {
+                    for (int i = 0; i < bArr.length(); i++) {
+                        String b = bArr.optString(i, "").trim();
+                        if (!b.isEmpty()) targetBuckets.add(b);
+                    }
+                }
+                if (targetBuckets.isEmpty()) targetBuckets.add("Camera");
+            }
+
+            SharedPreferences sp = getSharedPreferences("milk_keepalive", Context.MODE_PRIVATE);
+            String scopeSig = thumbScope + ":" + String.join(",", targetBuckets);
+            if ("full".equals(mode) || !scopeSig.equals(sp.getString("native_thumb_sig", ""))) {
+                SharedPreferences.Editor ed = sp.edit().putString("native_thumb_sig", scopeSig);
+                for (String b : targetBuckets) {
+                    ed.remove("thumb_off_" + b);
+                    ed.remove("thumb_done_" + b);
+                }
+                ed.apply();
+            }
+
+            if ("incremental".equals(mode)) {
+                postThumbProgress(cleanBase, token, "syncing", "正在增量刷新最新缩略图…", 0, 0, "");
+                for (String b : targetBuckets) {
+                    if (!isWifiNow()) break;
+                    Set<String> bSet = new HashSet<>();
+                    bSet.add(b);
+                    JSONObject page = AlbumSyncPlugin.browsePhotosWithThumbsSync(this, bSet, 0, 40, 320);
+                    JSONObject up = new JSONObject();
+                    up.put("deviceId", deviceId);
+                    up.put("bucket", b);
+                    up.put("offset", 0);
+                    up.put("limit", 40);
+                    up.put("total", page.optInt("total", 0));
+                    up.put("items", page.optJSONArray("photos"));
+                    postJsonAuthed(cleanBase + "/album/browse/upload", token, up.toString(), 15000);
+                    Thread.sleep(800L);
+                }
+                postThumbProgress(cleanBase, token, "done", "缩略图已增量刷新至最新", 0, 0, "");
+                return;
+            }
+
+            int totalCached = 0;
+            for (String b : targetBuckets) {
+                if (sp.getBoolean("thumb_done_" + b, false)) continue;
+                int off = sp.getInt("thumb_off_" + b, 0);
+                Set<String> bSet = new HashSet<>();
+                bSet.add(b);
+                while (true) {
+                    if (!isWifiNow()) {
+                        postThumbProgress(cleanBase, token, "paused", "Wi-Fi 断开，缩略图同步暂停在 " + b, totalCached, 0, b);
+                        return;
+                    }
+                    JSONObject page = AlbumSyncPlugin.browsePhotosWithThumbsSync(this, bSet, off, 40, 320);
+                    int total = page.optInt("total", 0);
+                    JSONArray photosArr = page.optJSONArray("photos");
+                    int cnt = photosArr != null ? photosArr.length() : 0;
+                    JSONObject up = new JSONObject();
+                    up.put("deviceId", deviceId);
+                    up.put("bucket", b);
+                    up.put("offset", off);
+                    up.put("limit", 40);
+                    up.put("total", total);
+                    up.put("items", photosArr);
+                    postJsonAuthed(cleanBase + "/album/browse/upload", token, up.toString(), 15000);
+                    off += 40;
+                    totalCached += cnt;
+                    if (cnt < 40 || (total > 0 && off >= total)) {
+                        sp.edit().putBoolean("thumb_done_" + b, true).putInt("thumb_off_" + b, 0).apply();
+                        postThumbProgress(cleanBase, token, "syncing", "已完成目录 " + b + " 缩略图", totalCached, total, b);
+                        break;
+                    }
+                    sp.edit().putInt("thumb_off_" + b, off).apply();
+                    postThumbProgress(cleanBase, token, "syncing", "后台连续同步缩略图：" + b + " (" + off + "/" + total + ")", off, total, b);
+                    Thread.sleep(1500L);
                 }
             }
-            Set<String> bSet = new HashSet<>();
-            if (bucket != null && !bucket.trim().isEmpty()) bSet.add(bucket.trim());
-            SharedPreferences spOff = getSharedPreferences("milk_keepalive", Context.MODE_PRIVATE);
-            String offKey = "thumb_off_" + (bucket.isEmpty() ? "_all" : bucket);
-            int curOff = spOff.getInt(offKey, 0);
-            JSONObject page = AlbumSyncPlugin.browsePhotosWithThumbsSync(this, bSet, curOff, 40, 320);
-            int total = page.optInt("total", 0);
-            JSONArray photosArr = page.optJSONArray("photos");
-            int cnt = photosArr != null ? photosArr.length() : 0;
-            JSONObject up = new JSONObject();
-            up.put("deviceId", deviceId);
-            up.put("bucket", bucket);
-            up.put("offset", curOff);
-            up.put("limit", 40);
-            up.put("total", total);
-            up.put("items", photosArr);
-            postJsonAuthed(cleanBase + "/album/browse/upload", token, up.toString(), 15000);
-            int nextOff = (cnt >= 40 && (total <= 0 || curOff + 40 < total)) ? (curOff + 40) : 0;
-            spOff.edit().putInt(offKey, nextOff).apply();
-        } catch (Exception ignored) {}
+            postThumbProgress(cleanBase, token, "done", "全部目录缩略图已同步完成（后续仅增量更新）", totalCached, totalCached, "");
+        } catch (Exception ignored) {
+        } finally {
+            thumbRunning = false;
+        }
     }
 
     private void handleNativeCommand(String cleanBase, String token, String deviceId, String partnerName, JSONObject cmdObj) {
@@ -1645,6 +1743,12 @@ public class KeepAliveService extends Service {
                 res.put("offset", bOffset);
                 res.put("total", page.optInt("total", 0));
                 res.put("count", uploadedPhotos != null ? uploadedPhotos.length() : 0);
+            } else if ("thumb_sync".equals(cmd)) {
+                String tMode = args.optString("mode", "incremental");
+                thumbExecutor.submit(() -> runNativeThumbSync(cleanBase, token, deviceId, tMode));
+                res.put("method", "native-keepalive-service");
+                res.put("started", true);
+                res.put("mode", tMode);
             } else {
                 ok = false;
                 err = "App 在后台休眠中，暂不支持指令: " + cmd;

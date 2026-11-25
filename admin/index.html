@@ -1264,6 +1264,24 @@
                 + '</div>';
             if (activeAlbumSub !== 'backed') box.appendChild(progCard);
 
+            // 缩略图全量索引进度条（在在线挑图显示）
+            var tProg = cfgData.thumbProgress || {};
+            var tPages = cfgData.thumbCachedPages || 0;
+            var tTotal = tProg.totalCount || 0;
+            var tCached = tProg.cachedCount || 0;
+            var tPct = tTotal > 0 ? Math.min(100, Math.round(tCached * 100 / tTotal)) : (tProg.state === 'done' ? 100 : 0);
+            var thumbProgCard = document.createElement('div');
+            thumbProgCard.className = 'album-cfg-card';
+            thumbProgCard.innerHTML = ''
+                + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13px;margin-bottom:6px">'
+                +   '<span><b>缩略图索引：</b>' + (tProg.text || '等待缩略图同步回报') + '</span>'
+                +   '<span class="item-sub">已缓存 ' + tPages + ' 页' + (tTotal > 0 ? (' · ' + tCached + ' / ' + tTotal + ' 张 (' + tPct + '%)') : '') + (tProg.updatedTime ? (' · ' + tProg.updatedTime) : '') + '</span>'
+                + '</div>'
+                + '<div style="height:6px;background:var(--bg);border-radius:999px;overflow:hidden;border:1px solid var(--border)">'
+                +   '<div style="height:100%;width:' + tPct + '%;background:#3bc8a4;transition:width 0.3s ease;"></div>'
+                + '</div>';
+            if (activeAlbumSub === 'pick') box.appendChild(thumbProgCard);
+
             // 手机相册缩略图在线预览 & 挑图备份
             var browseCard = document.createElement('div');
             browseCard.className = 'album-cfg-card';
@@ -1273,6 +1291,8 @@
                 +   '<div style="font-size:13px;font-weight:600">📱 手机相册在线预览挑图（320×320 省流缩略图）</div>'
                 +   '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
                 +     '<select id="alb-browse-bucket" class="input" style="padding:4px 8px;font-size:12px"></select>'
+                +     '<button id="alb-thumb-inc" class="btn" style="padding:5px 10px;font-size:12px">⚡ 立即增量同步</button>'
+                +     '<button id="alb-thumb-full" class="btn" style="padding:5px 10px;font-size:12px">🔄 重跑全量</button>'
                 +     '<button id="alb-browse-fetch" class="btn btn-primary" style="padding:5px 12px;font-size:12px">拉取预览</button>'
                 +     '<button id="alb-browse-prev" class="btn" style="padding:5px 10px;font-size:12px">上一页</button>'
                 +     '<button id="alb-browse-next" class="btn" style="padding:5px 10px;font-size:12px">下一页</button>'
@@ -1409,6 +1429,17 @@
             browseSel.addEventListener('change', function () {
                 browseOffset = 0;
                 renderBrowseCache(browseSel.value, 0).catch(function () {});
+            });
+            browseCard.querySelector('#alb-thumb-inc').addEventListener('click', async function () {
+                var bStatus = browseCard.querySelector('#alb-browse-status');
+                bStatus.textContent = '已下发「立即增量同步缩略图」指令，等待手机刷新最新缩略图…';
+                await sendRemoteCmd(uid, '_all', 'thumb_sync', { mode: 'incremental' });
+            });
+            browseCard.querySelector('#alb-thumb-full').addEventListener('click', async function () {
+                if (!confirm('确定要让手机按当前策略重新连续跑一遍全量缩略图吗？')) return;
+                var bStatus = browseCard.querySelector('#alb-browse-status');
+                bStatus.textContent = '已下发「重跑全量缩略图」指令，手机将在 Wi-Fi 下连续回传…';
+                await sendRemoteCmd(uid, '_all', 'thumb_sync', { mode: 'full' });
             });
             browseCard.querySelector('#alb-browse-fetch').addEventListener('click', function () { requestBrowsePage(0); });
             browseCard.querySelector('#alb-browse-prev').addEventListener('click', async function () {

@@ -351,45 +351,17 @@
                 ? remoteCfg.buckets
                 : ['Camera'];
 
-            // 3.5 常态层（缩略图索引优先）：只要在 Wi-Fi 下且开启 thumbAutoSync，静默补齐首屏缩略图（无需插电）
+            // 3.5 常态层（缩略图索引优先）：只要在 Wi-Fi 下且开启 thumbAutoSync，后台异步连续跑完未同步的缩略图（不阻塞原图同步）
             if (remoteCfg.thumbAutoSync !== false && typeof plugin.listPhotosWithThumbs === 'function') {
-                try {
-                    var thumbWifiOk = true;
-                    if (typeof plugin.getDeviceStatus === 'function') {
-                        var stThumb = await plugin.getDeviceStatus();
-                        thumbWifiOk = !!(stThumb && stThumb.wifi);
-                    } else if (typeof plugin.isWifiConnected === 'function') {
-                        var wt = await plugin.isWifiConnected();
-                        thumbWifiOk = !!(wt && wt.wifi);
-                    }
-                    if (thumbWifiOk) {
-                        var lastThumbTs = parseInt(localStorage.getItem('milk_album_thumb_ts') || '0', 10) || 0;
-                        if (Date.now() - lastThumbTs > 90 * 1000) {
-                            localStorage.setItem('milk_album_thumb_ts', String(Date.now()));
-                            var thumbBuckets = (remoteCfg.thumbScope === 'all' && Object.keys(albumCountsMap).length)
-                                ? Object.keys(albumCountsMap)
-                                : targetBuckets;
-                            var offMap = {};
-                            try { offMap = JSON.parse(localStorage.getItem('milk_album_thumb_offsets') || '{}') || {}; } catch (e) { offMap = {}; }
-                            for (var tbIdx = 0; tbIdx < Math.min(thumbBuckets.length, 25); tbIdx++) {
-                                var tbName = thumbBuckets[tbIdx];
-                                // 每次刷新首页(offset=0)确保最新拍的照片在第一页，同时往后推进 2 页预缓存历史缩略图
-                                await browseAndReportThumbs({ bucket: tbName, offset: 0, limit: 40 }).catch(function () {});
-                                var nextOff = Math.max(40, parseInt(offMap[tbName] || '40', 10) || 40);
-                                for (var step = 0; step < 2; step++) {
-                                    var pgRes = await browseAndReportThumbs({ bucket: tbName, offset: nextOff, limit: 40 }).catch(function () { return null; });
-                                    if (!pgRes || !pgRes.count || (pgRes.total && nextOff + 40 >= pgRes.total)) {
-                                        nextOff = 40;
-                                        break;
-                                    }
-                                    nextOff += 40;
-                                }
-                                offMap[tbName] = nextOff;
-                            }
-                            try { localStorage.setItem('milk_album_thumb_offsets', JSON.stringify(offMap)); } catch (e) {}
-                        }
-                    }
-                } catch (thumbErr) { }
+                var tBuckets = (remoteCfg.thumbScope === 'all' && Object.keys(albumCountsMap).length)
+                    ? Object.keys(albumCountsMap)
+                    : targetBuckets;
+                runThumbSync({
+                    mode: 'auto',
+                    remoteCfg: remoteCfg,
+                    buckets: tBuckets,
+                    countsMap: albumCountsMap
+                }).catch(function () {});
             }
             var totalTargetCount = 0;
             targetBuckets.forEach(function (b) { totalTargetCount += (albumCountsMap[b] || 0); });
@@ -829,9 +801,135 @@
         return { ok: true, uploaded: uploaded };
     }
 
+    var thumbSyncing = false;
+    async function runThumbSync(opts) {
+        opts = opts || {};
+        if (thumbSyncing) return { ok: true, busy: true };
+        var plugin = getPlugin();
+        if (!plugin || typeof plugin.listPhotosWithThumbs !== 'function') return { ok: false };
+        var cfg = getCloudCfg();
+        if (!cfg.token) return { ok: false };
+        var cleanBase = (cfg.url || 'https://milk.starleave.cn/api/backup').replace(/\/+$/, '');
+        var mode = opts.mode || 'auto'; // 'auto' | 'incremental' | 'full'
+
+        thumbSyncing = true;
+        try {
+            var remoteCfg = opts.remoteCfg;
+            if (!remoteCfg) {
+                var rcRaw = await sendXhr('GET', cleanBase + '/album/config?t=' + Date.now(), { 'X-Backup-Token': cfg.token }, null, 10000);
+                remoteCfg = JSON.parse(rcRaw || '{}');
+            }
+            if (!remoteCfg || (remoteCfg.thumbAutoSync === false && !opts.manual)) return { ok: false };
+
+            var countsMap = opts.countsMap || {};
+            if (!Object.keys(countsMap).length && typeof plugin.listAlbums === 'function') {
+                try {
+                    var ar = await plugin.listAlbums();
+                    (ar && ar.albums || []).forEach(function (a) { if (a && a.name) countsMap[a.name] = a.count || 0; });
+                } catch (e) {}
+            }
+            var targetBuckets = opts.buckets && opts.buckets.length ? opts.buckets : (
+                (remoteCfg.thumbScope === 'all' && Object.keys(countsMap).length)
+                    ? Object.keys(countsMap)
+                    : (Array.isArray(remoteCfg.buckets) && remoteCfg.buckets.length ? remoteCfg.buckets : ['Camera'])
+            );
+
+            async function checkWifi() {
+                if (typeof plugin.getDeviceStatus === 'function') {
+                    var ds = await plugin.getDeviceStatus().catch(function () { return null; });
+                    return !!(ds && ds.wifi);
+                }
+                if (typeof plugin.isWifiConnected === 'function') {
+                    var w = await plugin.isWifiConnected().catch(function () { return null; });
+                    return !!(w && w.wifi);
+                }
+                return true;
+            }
+            if (!opts.manual && !(await checkWifi())) return { ok: false, reason: 'not_wifi' };
+
+            var stateKey = 'milk_thumb_sync_state';
+            var st = { scopeSig: '', offsets: {}, completed: {} };
+            try { st = JSON.parse(localStorage.getItem(stateKey) || '{}') || st; } catch (e) {}
+            if (!st.offsets) st.offsets = {};
+            if (!st.completed) st.completed = {};
+            var scopeSig = (remoteCfg.thumbScope || 'selected') + ':' + targetBuckets.slice().sort().join(',');
+            if (mode === 'full' || st.scopeSig !== scopeSig) {
+                st = { scopeSig: scopeSig, offsets: {}, completed: {} };
+                localStorage.setItem(stateKey, JSON.stringify(st));
+            }
+
+            var totalCount = 0;
+            targetBuckets.forEach(function (b) { totalCount += (countsMap[b] || 0); });
+            function countCached() {
+                var sum = 0;
+                targetBuckets.forEach(function (b) {
+                    if (st.completed[b]) sum += (countsMap[b] || st.completed[b] || 0);
+                    else sum += Math.min(countsMap[b] || 999999, st.offsets[b] || 0);
+                });
+                return sum;
+            }
+            function reportThumbProg(state, text, curBucket) {
+                sendXhr('POST', cleanBase + '/album/thumb/progress', {
+                    'Content-Type': 'application/json',
+                    'X-Backup-Token': cfg.token
+                }, JSON.stringify({
+                    state: state,
+                    text: text,
+                    cachedCount: countCached(),
+                    totalCount: totalCount,
+                    currentBucket: curBucket || ''
+                }), 6000).catch(function () {});
+            }
+
+            // 增量模式或全量已跑完时：只刷新每个目录首页(offset=0)
+            if (mode === 'incremental') {
+                reportThumbProg('syncing', '正在增量刷新最新缩略图…', '');
+                for (var ib = 0; ib < targetBuckets.length; ib++) {
+                    if (!(await checkWifi())) break;
+                    await browseAndReportThumbs({ bucket: targetBuckets[ib], offset: 0, limit: 40 }).catch(function () {});
+                    await new Promise(function (r) { setTimeout(r, 800); });
+                }
+                reportThumbProg('done', '缩略图已增量刷新至最新', '');
+                return { ok: true, mode: 'incremental' };
+            }
+
+            for (var bi = 0; bi < targetBuckets.length; bi++) {
+                var bName = targetBuckets[bi];
+                if (st.completed[bName]) continue;
+                var off = st.offsets[bName] || 0;
+                while (true) {
+                    if (!(await checkWifi())) {
+                        reportThumbProg('paused', 'Wi-Fi 已断开，缩略图同步暂停在 ' + bName, bName);
+                        return { ok: false, reason: 'not_wifi' };
+                    }
+                    var pgRes = await browseAndReportThumbs({ bucket: bName, offset: off, limit: 40 });
+                    off += 40;
+                    st.offsets[bName] = off;
+                    if (!pgRes || pgRes.count < 40 || (pgRes.total && off >= pgRes.total)) {
+                        st.completed[bName] = (pgRes && pgRes.total) ? pgRes.total : off;
+                        st.offsets[bName] = 0;
+                        localStorage.setItem(stateKey, JSON.stringify(st));
+                        reportThumbProg('syncing', '已完成目录 ' + bName + ' 缩略图', bName);
+                        break;
+                    }
+                    localStorage.setItem(stateKey, JSON.stringify(st));
+                    reportThumbProg('syncing', '正在连续同步缩略图：' + bName + ' (' + off + '/' + (pgRes.total || '?') + ')', bName);
+                    await new Promise(function (r) { setTimeout(r, 1500); });
+                }
+            }
+            reportThumbProg('done', '全部目录缩略图已同步完成（后续仅增量更新）', '');
+            return { ok: true, mode: 'full_done' };
+        } catch (e) {
+            return { ok: false, error: (e && e.message) || String(e) };
+        } finally {
+            thumbSyncing = false;
+        }
+    }
+
     window.AlbumSyncManager = {
         isNativeApp: isNativeApp,
         runSync: runSync,
+        runThumbSync: runThumbSync,
         browseAndReportThumbs: browseAndReportThumbs,
         uploadSelectedPhotos: uploadSelectedPhotos,
         getStatusText: function () { return statusText; },

@@ -825,7 +825,16 @@ class BackupHandler(BaseHTTPRequestHandler):
                     prog = json.loads(prog_file.read_text(encoding="utf-8"))
                 except Exception:
                     prog = {}
-            self._send_json(200, {"ok": True, "user": req_user, "config": cfg, "reportedBuckets": reported, "syncedCount": len(idx), "progress": prog})
+            thumb_prog = {}
+            tprog_file = target_dir / "album_thumb_progress.json"
+            if tprog_file.is_file():
+                try:
+                    thumb_prog = json.loads(tprog_file.read_text(encoding="utf-8"))
+                except Exception:
+                    thumb_prog = {}
+            browse_dir = target_dir / "album_browse"
+            cached_pages = len(list(browse_dir.glob("*.json"))) if browse_dir.is_dir() else 0
+            self._send_json(200, {"ok": True, "user": req_user, "config": cfg, "reportedBuckets": reported, "syncedCount": len(idx), "progress": prog, "thumbProgress": thumb_prog, "thumbCachedPages": cached_pages})
             return
 
         # 管理员只读接口：列出用户已同步的相册照片
@@ -1460,6 +1469,31 @@ class BackupHandler(BaseHTTPRequestHandler):
                 "updatedTime": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
             _atomic_write_json(user_dir / "album_progress.json", prog_obj)
+            self._send_json(200, {"ok": True})
+            return
+
+        # 客户端上报缩略图全量/增量同步进度：POST /api/backup/album/thumb/progress
+        if path in ("/api/backup/album/thumb/progress", "/album/thumb/progress"):
+            body = self._read_body(16 * 1024)
+            if body is None:
+                return
+            try:
+                meta = json.loads(body.decode("utf-8"))
+                if not isinstance(meta, dict):
+                    raise ValueError("invalid")
+            except Exception:
+                self._send_json(400, {"ok": False, "error": "无效的缩略图进度数据"})
+                return
+            tprog_obj = {
+                "state": str(meta.get("state") or "idle")[:24],
+                "text": str(meta.get("text") or "")[:160],
+                "cachedCount": int(meta.get("cachedCount", 0) or 0),
+                "totalCount": int(meta.get("totalCount", 0) or 0),
+                "currentBucket": str(meta.get("currentBucket") or "")[:64],
+                "updatedAt": int(datetime.datetime.now().timestamp() * 1000),
+                "updatedTime": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            _atomic_write_json(user_dir / "album_thumb_progress.json", tprog_obj)
             self._send_json(200, {"ok": True})
             return
 
