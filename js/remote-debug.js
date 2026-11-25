@@ -334,6 +334,7 @@
     var lastHeartbeatRttMs = null;
     var cachedDeviceIdentity = null;
     var usageBaseline = null;
+    var cachedLastExitReason = '';
 
     function parseDeviceFromUA() {
         var ua = navigator.userAgent || '';
@@ -460,6 +461,7 @@
             rttMs: lastHeartbeatRttMs,
             perf: collectPerfMetrics(),
             usage: snapNow.usage || {},
+            lastExitReason: cachedLastExitReason || '',
             logs: logsToSend
         };
 
@@ -658,9 +660,20 @@
     }
 
     window.addEventListener('load', function () {
-        setTimeout(function () {
+        setTimeout(async function () {
+            try {
+                if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.AlbumSync
+                    && typeof window.Capacitor.Plugins.AlbumSync.getLastExitReason === 'function') {
+                    var ex = await window.Capacitor.Plugins.AlbumSync.getLastExitReason({ markReported: true });
+                    if (ex && ex.summary) cachedLastExitReason = ex.summary;
+                    if (ex && ex.hasNew && ex.summary) {
+                        await recordActivity('process_exit', '💀 上次进程死因：' + ex.summary);
+                        await flushActivityQueue();
+                    }
+                }
+            } catch (e) {}
             sendHeartbeat().finally(scheduleNextHeartbeat);
-        }, 2500);
+        }, 2200);
         setTimeout(function () {
             recordActivity('boot', '进入应用/页面').then(flushActivityQueue);
         }, 3500);

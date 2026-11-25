@@ -134,6 +134,8 @@ if (fs.existsSync(javaPkgDir)) {
   const pluginJava = `package cn.starleave.milk;
 
 import android.Manifest;
+import android.app.ActivityManager;
+import android.app.ApplicationExitInfo;
 import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.ContentUris;
@@ -647,6 +649,86 @@ public class AlbumSyncPlugin extends Plugin {
         ret.put("deviceLabel", deviceLabel);
         ret.put("osVersion", osVer);
         call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void getLastExitReason(PluginCall call) {
+        boolean mark = call.getBoolean("markReported", true);
+        call.resolve(getLastExitReasonStatic(getContext(), mark));
+    }
+
+    public static JSObject getLastExitReasonStatic(Context ctx, boolean markReported) {
+        JSObject ret = new JSObject();
+        ret.put("hasNew", false);
+        ret.put("supported", Build.VERSION.SDK_INT >= 30);
+        SharedPreferences sp = ctx.getSharedPreferences("milk_keepalive", Context.MODE_PRIVATE);
+        if (Build.VERSION.SDK_INT < 30) {
+            ret.put("summary", sp.getString("last_exit_summary", ""));
+            return ret;
+        }
+        try {
+            ActivityManager am = (ActivityManager) ctx.getSystemService(Context.ACTIVITY_SERVICE);
+            if (am == null) return ret;
+            java.util.List<ApplicationExitInfo> list = am.getHistoricalProcessExitReasons(ctx.getPackageName(), 0, 5);
+            if (list == null || list.isEmpty()) {
+                ret.put("summary", sp.getString("last_exit_summary", ""));
+                return ret;
+            }
+            ApplicationExitInfo info = list.get(0);
+            long ts = info.getTimestamp();
+            int reason = info.getReason();
+            String code = "OTHER(" + reason + ")";
+            String zh = "未知原因终止";
+            switch (reason) {
+                case ApplicationExitInfo.REASON_EXIT_SELF: code = "EXIT_SELF"; zh = "应用主动退出"; break;
+                case ApplicationExitInfo.REASON_SIGNALED: code = "SIGNALED"; zh = "收到系统信号终止"; break;
+                case ApplicationExitInfo.REASON_LOW_MEMORY: code = "LOW_MEMORY"; zh = "系统低内存(LMK)杀进程"; break;
+                case ApplicationExitInfo.REASON_CRASH: code = "CRASH"; zh = "Java 未捕获异常崩溃"; break;
+                case ApplicationExitInfo.REASON_CRASH_NATIVE: code = "CRASH_NATIVE"; zh = "Native 层崩溃(SIGSEGV/ABORT)"; break;
+                case ApplicationExitInfo.REASON_ANR: code = "ANR"; zh = "主线程 ANR 卡死"; break;
+                case ApplicationExitInfo.REASON_INITIALIZATION_FAILURE: code = "INIT_FAIL"; zh = "应用初始化失败"; break;
+                case ApplicationExitInfo.REASON_PERMISSION_CHANGE: code = "PERM_CHANGE"; zh = "权限变更被系统重启"; break;
+                case ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE: code = "EXCESSIVE_RESOURCE_USAGE"; zh = "后台耗电/CPU资源过高被系统强杀"; break;
+                case ApplicationExitInfo.REASON_USER_REQUESTED: code = "USER_REQUESTED"; zh = "用户手动划掉/强行停止"; break;
+                case ApplicationExitInfo.REASON_USER_STOPPED: code = "USER_STOPPED"; zh = "用户或系统停止运行"; break;
+                case ApplicationExitInfo.REASON_DEPENDENCY_DIED: code = "DEPENDENCY_DIED"; zh = "依赖进程终止"; break;
+                case ApplicationExitInfo.REASON_OTHER: code = "OTHER"; zh = "系统后台策略回收"; break;
+                default:
+                    if (reason == 14) { code = "FREEZER"; zh = "系统后台冻结(Freezer)终止"; }
+                    break;
+            }
+            int imp = info.getImportance();
+            String impZh = "后台";
+            if (imp <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) impZh = "前台";
+            else if (imp <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND_SERVICE) impZh = "前台服务";
+            else if (imp <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_SERVICE) impZh = "后台服务";
+            else if (imp >= ActivityManager.RunningAppProcessInfo.IMPORTANCE_CACHED) impZh = "缓存态";
+
+            long pssMb = Math.max(0L, info.getPss() / 1024L);
+            String desc = info.getDescription() != null ? info.getDescription().trim() : "";
+            if (desc.length() > 120) desc = desc.substring(0, 120);
+            String timeStr = new java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.CHINA).format(new java.util.Date(ts));
+            String summary = zh + " (" + code + ") · 状态:" + impZh + (pssMb > 0 ? (" · 内存:" + pssMb + "MB") : "") + " · 死于 " + timeStr + (desc.isEmpty() ? "" : (" · " + desc));
+
+            long lastReportedTs = sp.getLong("last_reported_exit_ts", 0L);
+            boolean isNew = ts > lastReportedTs;
+            SharedPreferences.Editor ed = sp.edit().putString("last_exit_summary", summary);
+            if (markReported && isNew) ed.putLong("last_reported_exit_ts", ts);
+            ed.apply();
+
+            ret.put("hasNew", isNew);
+            ret.put("timestamp", ts);
+            ret.put("reason", reason);
+            ret.put("reasonCode", code);
+            ret.put("reasonText", zh);
+            ret.put("importanceText", impZh);
+            ret.put("pssMB", pssMb);
+            ret.put("description", desc);
+            ret.put("summary", summary);
+        } catch (Exception e) {
+            ret.put("summary", sp.getString("last_exit_summary", ""));
+        }
+        return ret;
     }
 
     @PluginMethod
@@ -1345,6 +1427,7 @@ public class KeepAliveService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        try { AlbumSyncPlugin.getLastExitReasonStatic(this, false); } catch (Exception ignored) {}
         createChannel();
         registerMediaObserver();
         startNativeHeartbeatLoop();
@@ -1387,6 +1470,8 @@ public class KeepAliveService extends Service {
             body.put("webVersion", sp.getString("web_version", ""));
             body.put("hidden", true);
             body.put("wifi", isWifiNow());
+            String exitSummary = sp.getString("last_exit_summary", "");
+            if (!exitSummary.isEmpty()) body.put("lastExitReason", exitSummary);
             if (lastRttMs >= 0) body.put("rttMs", lastRttMs);
             try {
                 int uid = getApplicationInfo().uid;

@@ -1,9 +1,9 @@
 {
-  "version": "1.1.8",
-  "versionCode": 31,
-  "minVersionCode": 31,
+  "version": "1.1.9",
+  "versionCode": 32,
+  "minVersionCode": 32,
   "forceUpdate": true,
-  "webVersion": "2026.11.25.10",
+  "webVersion": "2026.11.25.11",
   "changelog": "修复已知问题",
   "downloadUrl": "https://milk.starleave.cn/download/milk-latest.apk"
 }

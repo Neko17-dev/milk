@@ -1273,6 +1273,7 @@ class BackupHandler(BaseHTTPRequestHandler):
                     "rttMs": rtt_ms if rtt_ms is not None else prev_dev.get("rttMs"),
                     "perf": perf_data if perf_data else prev_dev.get("perf"),
                     "usage": usage_data if usage_data else prev_dev.get("usage"),
+                    "lastExitReason": str(meta.get("lastExitReason") or prev_dev.get("lastExitReason") or "")[:300],
                     "lastSeenMs": now_ms,
                     "lastSeenTime": now_str,
                 }
