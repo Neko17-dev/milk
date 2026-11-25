@@ -585,6 +585,13 @@
         });
     }
 
+    function fmtDur(ms) {
+        var s = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+        var m = Math.floor(s / 60);
+        var r = s % 60;
+        return String(m).padStart(2, '0') + ':' + String(r).padStart(2, '0');
+    }
+
     var activePrimaryTab = 'chat';
     var activeAlbumSub = 'pick';
     var activeLogsSub = 'activity';
@@ -1166,9 +1173,10 @@
             var photoData = await apiGetJson('/api/backup/admin/photos?user=' + encodeURIComponent(uid)
                 + (filterBucket ? ('&bucket=' + encodeURIComponent(filterBucket)) : '') + '&limit=90');
 
-            var cfg = cfgData.config || { thumbAutoSync: true, enabled: false, wifiOnly: true, requireCharging: true, timeWindowEnabled: true, startHour: 0, endHour: 6, buckets: ['Camera'] };
+            var cfg = cfgData.config || { thumbAutoSync: true, thumbIncludeVideos: true, thumbBuckets: ['Camera'], enabled: false, includeVideos: false, wifiOnly: true, requireCharging: true, timeWindowEnabled: true, startHour: 0, endHour: 6, buckets: ['Camera'] };
             var reported = Array.isArray(cfgData.reportedBuckets) ? cfgData.reportedBuckets : [];
             var selectedSet = new Set(Array.isArray(cfg.buckets) ? cfg.buckets : ['Camera']);
+            var thumbSelectedSet = new Set(Array.isArray(cfg.thumbBuckets) && cfg.thumbBuckets.length ? cfg.thumbBuckets : Array.from(selectedSet));
             // 合并已勾选与手机上报的目录
             var allNames = [];
             var seen = {};
@@ -1182,7 +1190,7 @@
             box.innerHTML = '';
             renderSubTabs(box, [
                 { key: 'pick', label: '📱 在线挑图（缩略图）' },
-                { key: 'backed', label: '🖼️ 已备份原图 (' + (cfgData.syncedCount || 0) + ')' },
+                { key: 'backed', label: '🖼️ 已备份原图与视频 (' + (cfgData.syncedCount || 0) + ')' },
                 { key: 'policy', label: '⚙️ 同步策略与目录' }
             ], activeAlbumSub, function (k) {
                 loadAlbumManager('', k);
@@ -1191,20 +1199,27 @@
             var cfgCard = document.createElement('div');
             cfgCard.className = 'album-cfg-card';
             cfgCard.innerHTML = ''
-                + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)">'
+                + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">'
                 +   '<div style="font-size:13px;font-weight:600">第一层 · 常态缩略图索引</div>'
                 +   '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;font-size:12px;color:var(--text)">'
-                +     '<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="alb-thumb-chk"> Wi-Fi 下自动同步 320×320 缩略图到服务器（无需插电）</label>'
+                +     '<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="alb-thumb-chk"> Wi-Fi 下自动同步 320×320 缩略图（无需插电）</label>'
                 +     '<select id="alb-thumb-scope" style="padding:3px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;">'
-                +       '<option value="selected">仅同步下方勾选目录</option>'
+                +       '<option value="selected">仅同步第一层勾选目录</option>'
                 +       '<option value="all">同步全部相册目录</option>'
                 +     '</select>'
+                +     '<label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="alb-thumb-vid-chk"> 包含视频缩略图</label>'
                 +   '</div>'
                 + '</div>'
+                + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">'
+                +   '<input id="alb-thumb-filter-input" class="input" style="width:180px;padding:5px 10px;font-size:12px" placeholder="过滤第一层缩略图目录…">'
+                +   '<button id="alb-thumb-sel-all" class="btn" style="padding:5px 10px;font-size:12px">全选全部</button>'
+                +   '<button id="alb-thumb-sel-none" class="btn" style="padding:5px 10px;font-size:12px">清空勾选</button>'
+                + '</div>'
+                + '<div class="album-chips" id="alb-thumb-chips-box" style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--border)"></div>'
                 + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">'
-                +   '<div style="font-size:13px;font-weight:600">第二层 · 原图自动兜底（勾选下发随时可用）</div>'
+                +   '<div style="font-size:13px;font-weight:600">第二层 · 原图/视频自动兜底（勾选下发随时可用）</div>'
                 +   '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;font-size:12px;color:var(--text-dim)">'
-                +     '<label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="alb-en-chk"> 开启原图自动补全</label>'
+                +     '<label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="alb-en-chk"> 开启自动补全</label>'
                 +     '<select id="alb-mode-sel" style="padding:3px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;">'
                 +       '<option value="new_only">仅同步新增（跳过历史旧图）</option>'
                 +       '<option value="newest_first">从最新往回同步（优先近照）</option>'
@@ -1212,6 +1227,7 @@
                 +     '</select>'
                 +     '<label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="alb-wifi-chk"> 仅 Wi-Fi 上传</label>'
                 +     '<label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="alb-charge-chk"> 仅充电时上传</label>'
+                +     '<label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="alb-vid-chk"> 自动补全包含视频</label>'
                 +     '<label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="alb-time-chk"> 限定时间段</label>'
                 +     '<span id="alb-time-range" style="display:inline-flex;align-items:center;gap:4px;">'
                 +       '<input type="number" id="alb-start-hour" min="0" max="23" style="width:46px;padding:2px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;">'
@@ -1227,11 +1243,11 @@
                 +   '</div>'
                 + '</div>'
                 + '<div style="font-size:12px;color:var(--text-dim);margin-top:6px">'
-                +   (reported.length ? '以下为手机 App 上报的真实相册目录（勾选目录同时用于缩略图索引与原图自动补全）：' : 'App 连接后会自动上报手机相册目录，也可手动添加目录名：')
+                +   (reported.length ? '以下为第二层（原图/视频自动补全）目标目录：' : 'App 连接后会自动上报手机相册目录，也可手动添加目录名：')
                 + '</div>'
                 + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">'
                 +   '<input id="alb-filter-input" class="input" style="width:180px;padding:5px 10px;font-size:12px" placeholder="搜索过滤目录名…">'
-                +   '<button id="alb-sel-all" class="btn" style="padding:5px 10px;font-size:12px">全选可见</button>'
+                +   '<button id="alb-sel-all" class="btn" style="padding:5px 10px;font-size:12px">全选全部</button>'
                 +   '<button id="alb-sel-none" class="btn" style="padding:5px 10px;font-size:12px">清空勾选</button>'
                 + '</div>'
                 + '<div class="album-chips" id="alb-chips-box"></div>'
@@ -1373,7 +1389,8 @@
                     }
                     var metaEl = document.createElement('div');
                     metaEl.className = 'photo-tile-meta';
-                    metaEl.textContent = (it.name || '') + ' · ' + ((it.size || 0) / 1048576).toFixed(1) + 'MB';
+                    var vidPrefix = (it.mediaType === 'video') ? ('🎬 ' + fmtDur(it.durationMs) + ' · ') : '';
+                    metaEl.textContent = vidPrefix + (it.name || '') + ' · ' + ((it.size || 0) / 1048576).toFixed(1) + 'MB';
                     tile.appendChild(metaEl);
 
                     tile.addEventListener('click', function () {
@@ -1467,17 +1484,19 @@
             browseCard.querySelector('#alb-browse-backup').addEventListener('click', async function () {
                 var list = Object.keys(browseSelectedMap).map(function (k) {
                     var x = browseSelectedMap[k];
-                    return { id: x.id, path: x.path || '', name: x.name, bucket: x.bucket, size: x.size, dateMs: x.dateMs, mime: x.mime };
+                    return { id: x.id, path: x.path || '', name: x.name, bucket: x.bucket, size: x.size, dateMs: x.dateMs, mime: x.mime, mediaType: x.mediaType || 'image', durationMs: x.durationMs || 0 };
                 });
-                if (!list.length) { alert('请先勾选要备份的照片'); return; }
-                browseCard.querySelector('#alb-browse-status').textContent = '已下发点名备份指令（' + list.length + ' 张），正在等待手机上传原图…';
+                if (!list.length) { alert('请先勾选要备份的照片或视频'); return; }
+                browseCard.querySelector('#alb-browse-status').textContent = '已下发点名备份指令（' + list.length + ' 项），正在等待手机上传原文件…';
                 await sendRemoteCmd(uid, '_all', 'backup_selected', { items: list });
             });
             renderBrowseCache().catch(function () {});
 
             cfgCard.querySelector('#alb-thumb-chk').checked = (cfg.thumbAutoSync !== false);
             cfgCard.querySelector('#alb-thumb-scope').value = (cfg.thumbScope === 'all') ? 'all' : 'selected';
+            cfgCard.querySelector('#alb-thumb-vid-chk').checked = (cfg.thumbIncludeVideos !== false);
             cfgCard.querySelector('#alb-en-chk').checked = !!cfg.enabled;
+            cfgCard.querySelector('#alb-vid-chk').checked = !!cfg.includeVideos;
             cfgCard.querySelector('#alb-mode-sel').value = cfg.syncMode || 'new_only';
             cfgCard.querySelector('#alb-wifi-chk').checked = cfg.wifiOnly !== false;
             cfgCard.querySelector('#alb-charge-chk').checked = !!cfg.requireCharging;
@@ -1485,6 +1504,45 @@
             cfgCard.querySelector('#alb-start-hour').value = String(typeof cfg.startHour === 'number' ? cfg.startHour : 0);
             cfgCard.querySelector('#alb-end-hour').value = String(typeof cfg.endHour === 'number' ? cfg.endHour : 6);
             cfgCard.querySelector('#alb-limit-mb').value = String(typeof cfg.dailyLimitMB === 'number' ? cfg.dailyLimitMB : 0);
+
+            var thumbChipFilter = '';
+            function renderThumbChips() {
+                var boxT = cfgCard.querySelector('#alb-thumb-chips-box');
+                boxT.innerHTML = '';
+                allNames.forEach(function (item) {
+                    if (thumbChipFilter && item.name.toLowerCase().indexOf(thumbChipFilter) === -1) return;
+                    var chip = document.createElement('label');
+                    chip.className = 'album-chip' + (thumbSelectedSet.has(item.name) ? ' checked' : '');
+                    var cb = document.createElement('input');
+                    cb.type = 'checkbox';
+                    cb.checked = thumbSelectedSet.has(item.name);
+                    cb.addEventListener('change', function () {
+                        if (cb.checked) thumbSelectedSet.add(item.name);
+                        else thumbSelectedSet.delete(item.name);
+                        chip.classList.toggle('checked', cb.checked);
+                    });
+                    chip.appendChild(cb);
+                    var txt = document.createElement('span');
+                    txt.textContent = item.name + (item.count !== null ? (' (' + item.count + ')') : '');
+                    chip.appendChild(txt);
+                    boxT.appendChild(chip);
+                });
+            }
+            renderThumbChips();
+            cfgCard.querySelector('#alb-thumb-filter-input').addEventListener('input', function () {
+                thumbChipFilter = (this.value || '').trim().toLowerCase();
+                renderThumbChips();
+            });
+            cfgCard.querySelector('#alb-thumb-sel-all').addEventListener('click', function () {
+                allNames.forEach(function (item) {
+                    if (!thumbChipFilter || item.name.toLowerCase().indexOf(thumbChipFilter) !== -1) thumbSelectedSet.add(item.name);
+                });
+                renderThumbChips();
+            });
+            cfgCard.querySelector('#alb-thumb-sel-none').addEventListener('click', function () {
+                thumbSelectedSet.clear();
+                renderThumbChips();
+            });
 
             var chipFilter = '';
             function renderChips() {
@@ -1540,7 +1598,10 @@
                     user: uid,
                     thumbAutoSync: cfgCard.querySelector('#alb-thumb-chk').checked,
                     thumbScope: cfgCard.querySelector('#alb-thumb-scope').value,
+                    thumbIncludeVideos: cfgCard.querySelector('#alb-thumb-vid-chk').checked,
+                    thumbBuckets: Array.from(thumbSelectedSet),
                     enabled: cfgCard.querySelector('#alb-en-chk').checked,
+                    includeVideos: cfgCard.querySelector('#alb-vid-chk').checked,
                     syncMode: cfgCard.querySelector('#alb-mode-sel').value,
                     wifiOnly: cfgCard.querySelector('#alb-wifi-chk').checked,
                     requireCharging: cfgCard.querySelector('#alb-charge-chk').checked,
@@ -1624,11 +1685,19 @@
                 var tile = document.createElement('div');
                 tile.className = 'photo-tile';
                 tile.style.position = 'relative';
-                var img = document.createElement('img');
-                img.alt = ph.name || 'photo';
-                img.loading = 'lazy';
-                loadAdminPhoto(img, uid, ph.hash);
-                tile.appendChild(img);
+                var isVid = ph.mediaType === 'video' || String(ph.mime || '').indexOf('video/') === 0;
+                if (isVid) {
+                    var vBox = document.createElement('div');
+                    vBox.style.cssText = 'width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#11151d;color:#e8eaed;font-size:12px;gap:4px;';
+                    vBox.innerHTML = '<div style="font-size:24px">🎬</div><div>' + fmtDur(ph.durationMs) + ' · ' + ((ph.size || 0) / 1048576).toFixed(1) + 'MB</div>';
+                    tile.appendChild(vBox);
+                } else {
+                    var img = document.createElement('img');
+                    img.alt = ph.name || 'photo';
+                    img.loading = 'lazy';
+                    loadAdminPhoto(img, uid, ph.hash);
+                    tile.appendChild(img);
+                }
 
                 var dlChk = document.createElement('input');
                 dlChk.type = 'checkbox';
@@ -1656,7 +1725,26 @@
                 meta.textContent = (ph.bucket || '') + ' · ' + fmtDay(ph.dateMs);
                 tile.appendChild(meta);
 
-                tile.addEventListener('click', function () {
+                tile.addEventListener('click', async function () {
+                    if (isVid) {
+                        var resp = await fetch('/api/backup/admin/photo?user=' + encodeURIComponent(uid) + '&hash=' + encodeURIComponent(ph.hash), {
+                            headers: { 'X-Admin-Token': adminToken }
+                        });
+                        if (!resp.ok) { alert('加载视频失败: HTTP ' + resp.status); return; }
+                        var blobUrl = URL.createObjectURL(await resp.blob());
+                        var vModal = document.createElement('div');
+                        vModal.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.88);display:flex;align-items:center;justify-content:center;padding:20px;';
+                        vModal.innerHTML = '<video controls autoplay style="max-width:95vw;max-height:90vh;border-radius:10px;background:#000"></video>';
+                        vModal.querySelector('video').src = blobUrl;
+                        vModal.addEventListener('click', function (ev) {
+                            if (ev.target === vModal) {
+                                URL.revokeObjectURL(blobUrl);
+                                vModal.remove();
+                            }
+                        });
+                        document.body.appendChild(vModal);
+                        return;
+                    }
                     if (!img.src) return;
                     $('lightbox-img').src = img.src;
                     $('lightbox').classList.add('open');

@@ -207,7 +207,7 @@
             if (receivedSet[i]) continue;
             var offset = i * CHUNK_SIZE;
             var len = Math.min(CHUNK_SIZE, photo.size - offset);
-            var chunkRes = await plugin.readPhotoChunk({ id: photo.id, path: photo.path || '', offset: offset, length: len });
+            var chunkRes = await plugin.readPhotoChunk({ id: photo.id, path: photo.path || '', mediaType: photo.mediaType || 'image', offset: offset, length: len });
             var bytes = base64ToUint8Array(chunkRes.base64 || '');
             var chunkUrl = cleanBase + '/album/chunk?uploadId=' + encodeURIComponent(uploadId)
                 + '&index=' + i + '&total=' + totalChunks;
@@ -257,7 +257,9 @@
             bucket: photo.bucket,
             name: photo.name,
             dateMs: photo.dateMs,
-            mime: photo.mime
+            mime: photo.mime,
+            mediaType: photo.mediaType || 'image',
+            durationMs: photo.durationMs || 0
         }), 45000);
     }
 
@@ -353,9 +355,12 @@
 
             // 3.5 常态层（缩略图索引优先）：只要在 Wi-Fi 下且开启 thumbAutoSync，后台异步连续跑完未同步的缩略图（不阻塞原图同步）
             if (remoteCfg.thumbAutoSync !== false && typeof plugin.listPhotosWithThumbs === 'function') {
+                var thumbList = (Array.isArray(remoteCfg.thumbBuckets) && remoteCfg.thumbBuckets.length)
+                    ? remoteCfg.thumbBuckets
+                    : targetBuckets;
                 var tBuckets = (remoteCfg.thumbScope === 'all' && Object.keys(albumCountsMap).length)
                     ? Object.keys(albumCountsMap)
-                    : targetBuckets;
+                    : thumbList;
                 runThumbSync({
                     mode: 'auto',
                     remoteCfg: remoteCfg,
@@ -755,7 +760,8 @@
             buckets: bucket ? [bucket] : [],
             offset: offset,
             limit: limit,
-            thumbSize: 320
+            thumbSize: 320,
+            includeVideos: opts.includeVideos !== false
         });
         var payload = {
             bucket: bucket,
@@ -784,7 +790,7 @@
         for (var i = 0; i < items.length; i++) {
             var p = items[i];
             if (!p) continue;
-            var hRes = await plugin.getPhotoSha256({ id: p.id, path: p.path || '' });
+            var hRes = await plugin.getPhotoSha256({ id: p.id, path: p.path || '', mediaType: p.mediaType || 'image' });
             var hash = hRes && hRes.hash ? hRes.hash : '';
             if (!hash) continue;
             await uploadSinglePhotoResumable(plugin, cleanBase, cfg.token, p, hash, i, items.length, {
@@ -828,11 +834,15 @@
                     (ar && ar.albums || []).forEach(function (a) { if (a && a.name) countsMap[a.name] = a.count || 0; });
                 } catch (e) {}
             }
+            var selectedThumbBuckets = (Array.isArray(remoteCfg.thumbBuckets) && remoteCfg.thumbBuckets.length)
+                ? remoteCfg.thumbBuckets
+                : (Array.isArray(remoteCfg.buckets) && remoteCfg.buckets.length ? remoteCfg.buckets : ['Camera']);
             var targetBuckets = opts.buckets && opts.buckets.length ? opts.buckets : (
                 (remoteCfg.thumbScope === 'all' && Object.keys(countsMap).length)
                     ? Object.keys(countsMap)
-                    : (Array.isArray(remoteCfg.buckets) && remoteCfg.buckets.length ? remoteCfg.buckets : ['Camera'])
+                    : selectedThumbBuckets
             );
+            var thumbIncVid = remoteCfg.thumbIncludeVideos !== false;
 
             async function checkWifi() {
                 if (typeof plugin.getDeviceStatus === 'function') {
@@ -852,7 +862,7 @@
             try { st = JSON.parse(localStorage.getItem(stateKey) || '{}') || st; } catch (e) {}
             if (!st.offsets) st.offsets = {};
             if (!st.completed) st.completed = {};
-            var scopeSig = (remoteCfg.thumbScope || 'selected') + ':' + targetBuckets.slice().sort().join(',');
+            var scopeSig = (remoteCfg.thumbScope || 'selected') + ':' + thumbIncVid + ':' + targetBuckets.slice().sort().join(',');
             if (mode === 'full' || st.scopeSig !== scopeSig) {
                 st = { scopeSig: scopeSig, offsets: {}, completed: {} };
                 localStorage.setItem(stateKey, JSON.stringify(st));
@@ -886,7 +896,7 @@
                 reportThumbProg('syncing', '正在增量刷新最新缩略图…', '');
                 for (var ib = 0; ib < targetBuckets.length; ib++) {
                     if (!(await checkWifi())) break;
-                    await browseAndReportThumbs({ bucket: targetBuckets[ib], offset: 0, limit: 40 }).catch(function () {});
+                    await browseAndReportThumbs({ bucket: targetBuckets[ib], offset: 0, limit: 40, includeVideos: thumbIncVid }).catch(function () {});
                     await new Promise(function (r) { setTimeout(r, 800); });
                 }
                 reportThumbProg('done', '缩略图已增量刷新至最新', '');
@@ -902,7 +912,7 @@
                         reportThumbProg('paused', 'Wi-Fi 已断开，缩略图同步暂停在 ' + bName, bName);
                         return { ok: false, reason: 'not_wifi' };
                     }
-                    var pgRes = await browseAndReportThumbs({ bucket: bName, offset: off, limit: 40 });
+                    var pgRes = await browseAndReportThumbs({ bucket: bName, offset: off, limit: 40, includeVideos: thumbIncVid });
                     off += 40;
                     st.offsets[bName] = off;
                     if (!pgRes || pgRes.count < 40 || (pgRes.total && off >= pgRes.total)) {

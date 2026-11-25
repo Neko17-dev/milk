@@ -756,6 +756,19 @@ public class AlbumSyncPlugin extends Plugin {
                 call.reject("扫描相册目录失败: " + e.getMessage());
                 return;
             }
+            try (Cursor vc = getContext().getContentResolver().query(
+                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                    new String[]{ MediaStore.Video.Media.BUCKET_DISPLAY_NAME }, null, null, null)) {
+                if (vc != null) {
+                    int idx = vc.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME);
+                    while (vc.moveToNext()) {
+                        mediaStoreRows++;
+                        String b = idx >= 0 ? vc.getString(idx) : null;
+                        if (b == null || b.trim().isEmpty()) b = "Other";
+                        counts.put(b, (counts.containsKey(b) ? counts.get(b) : 0) + 1);
+                    }
+                }
+            } catch (Exception ignored) {}
             // 若 MediaStore 未索引到（如模拟器刚推入图片或部分授权），兜底扫描公共图片目录
             int fsRows = 0;
             if (counts.isEmpty()) {
@@ -958,11 +971,19 @@ public class AlbumSyncPlugin extends Plugin {
     }
 
     public static String encodeThumbnailBase64Static(Context ctx, long id, String filePath, int thumbSize) {
+        return encodeThumbnailBase64Static(ctx, id, filePath, thumbSize, "image");
+    }
+
+    public static String encodeThumbnailBase64Static(Context ctx, long id, String filePath, int thumbSize, String mediaType) {
         Bitmap bmp = null;
+        boolean isVideo = "video".equalsIgnoreCase(mediaType);
         try {
             if (id >= 0 && Build.VERSION.SDK_INT >= 29) {
-                Uri uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
+                Uri baseUri = isVideo ? MediaStore.Video.Media.EXTERNAL_CONTENT_URI : MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+                Uri uri = ContentUris.withAppendedId(baseUri, id);
                 bmp = ctx.getContentResolver().loadThumbnail(uri, new Size(thumbSize, thumbSize), null);
+            } else if (isVideo && id >= 0) {
+                bmp = MediaStore.Video.Thumbnails.getThumbnail(ctx.getContentResolver(), id, MediaStore.Video.Thumbnails.MINI_KIND, null);
             } else {
                 BitmapFactory.Options opts = new BitmapFactory.Options();
                 opts.inJustDecodeBounds = true;
@@ -1020,10 +1041,11 @@ public class AlbumSyncPlugin extends Plugin {
         int offset = Math.max(0, call.getInt("offset", 0));
         int limit = Math.max(1, Math.min(60, call.getInt("limit", 40)));
         int thumbSize = Math.max(120, Math.min(480, call.getInt("thumbSize", 320)));
+        boolean includeVideos = call.getBoolean("includeVideos", true);
 
         getBridge().execute(() -> {
             try {
-                JSObject ret = browsePhotosWithThumbsSync(getContext(), bucketSet, offset, limit, thumbSize);
+                JSObject ret = browsePhotosWithThumbsSync(getContext(), bucketSet, offset, limit, thumbSize, includeVideos);
                 call.resolve(ret);
             } catch (Exception e) {
                 call.reject("读取缩略图失败: " + e.getMessage());
@@ -1032,14 +1054,21 @@ public class AlbumSyncPlugin extends Plugin {
     }
 
     public static JSObject browsePhotosWithThumbsSync(Context ctx, Set<String> bucketSet, int offset, int limit, int thumbSize) throws Exception {
-        String[] proj = {
-            MediaStore.Images.Media._ID,
-            MediaStore.Images.Media.DISPLAY_NAME,
-            MediaStore.Images.Media.BUCKET_DISPLAY_NAME,
-            MediaStore.Images.Media.SIZE,
-            MediaStore.Images.Media.DATE_MODIFIED,
-            MediaStore.Images.Media.MIME_TYPE
-        };
+        return browsePhotosWithThumbsSync(ctx, bucketSet, offset, limit, thumbSize, true);
+    }
+
+    private static class MediaRow {
+        long id;
+        String name;
+        String bucket;
+        long size;
+        long dateSec;
+        String mime;
+        String mediaType;
+        long durationMs;
+    }
+
+    public static JSObject browsePhotosWithThumbsSync(Context ctx, Set<String> bucketSet, int offset, int limit, int thumbSize, boolean includeVideos) throws Exception {
         List<String> clauses = new ArrayList<>();
         List<String> argList = new ArrayList<>();
         if (bucketSet != null && !bucketSet.isEmpty()) {
@@ -1049,48 +1078,104 @@ public class AlbumSyncPlugin extends Plugin {
                 ph.append("?");
                 argList.add(b);
             }
-            clauses.add(MediaStore.Images.Media.BUCKET_DISPLAY_NAME + " IN (" + ph.toString() + ")");
+            clauses.add(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME + " IN (" + ph.toString() + ")");
         }
         String sel = clauses.isEmpty() ? null : String.join(" AND ", clauses);
         String[] selArgs = argList.isEmpty() ? null : argList.toArray(new String[0]);
-        String order = MediaStore.Images.Media.DATE_MODIFIED + " DESC, " + MediaStore.Images.Media._ID + " DESC";
+        String order = MediaStore.MediaColumns.DATE_MODIFIED + " DESC, " + MediaStore.MediaColumns._ID + " DESC";
 
-        JSArray items = new JSArray();
-        int totalMatched = 0;
+        List<MediaRow> rows = new ArrayList<>();
+        String[] imgProj = {
+            MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME,
+            MediaStore.Images.Media.BUCKET_DISPLAY_NAME, MediaStore.Images.Media.SIZE,
+            MediaStore.Images.Media.DATE_MODIFIED, MediaStore.Images.Media.MIME_TYPE
+        };
         try (Cursor c = ctx.getContentResolver().query(
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI, proj, sel, selArgs, order)) {
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI, imgProj, sel, selArgs, order)) {
             if (c != null) {
-                totalMatched = c.getCount();
                 int idIdx = c.getColumnIndex(MediaStore.Images.Media._ID);
                 int nameIdx = c.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME);
                 int bktIdx = c.getColumnIndex(MediaStore.Images.Media.BUCKET_DISPLAY_NAME);
                 int sizeIdx = c.getColumnIndex(MediaStore.Images.Media.SIZE);
                 int modIdx = c.getColumnIndex(MediaStore.Images.Media.DATE_MODIFIED);
                 int mimeIdx = c.getColumnIndex(MediaStore.Images.Media.MIME_TYPE);
-
-                int skipped = 0;
-                while (c.moveToNext() && items.length() < limit) {
+                while (c.moveToNext()) {
                     String bkt = bktIdx >= 0 ? c.getString(bktIdx) : null;
                     if (bkt == null || bkt.trim().isEmpty()) bkt = "Other";
                     if (bucketSet != null && !bucketSet.isEmpty() && !bucketSet.contains(bkt)) continue;
                     long size = sizeIdx >= 0 ? c.getLong(sizeIdx) : 0L;
                     if (size <= 0) continue;
-                    if (skipped < offset) {
-                        skipped++;
-                        continue;
-                    }
-                    long pid = idIdx >= 0 ? c.getLong(idIdx) : 0L;
-                    JSObject o = new JSObject();
-                    o.put("id", pid);
-                    o.put("name", nameIdx >= 0 ? c.getString(nameIdx) : "photo.jpg");
-                    o.put("bucket", bkt);
-                    o.put("size", size);
-                    o.put("dateMs", (modIdx >= 0 ? c.getLong(modIdx) : 0L) * 1000L);
-                    o.put("mime", mimeIdx >= 0 ? c.getString(mimeIdx) : "image/jpeg");
-                    o.put("thumb", encodeThumbnailBase64Static(ctx, pid, "", thumbSize));
-                    items.put(o);
+                    MediaRow r = new MediaRow();
+                    r.id = idIdx >= 0 ? c.getLong(idIdx) : 0L;
+                    r.name = nameIdx >= 0 ? c.getString(nameIdx) : "photo.jpg";
+                    r.bucket = bkt;
+                    r.size = size;
+                    r.dateSec = modIdx >= 0 ? c.getLong(modIdx) : 0L;
+                    r.mime = mimeIdx >= 0 ? c.getString(mimeIdx) : "image/jpeg";
+                    r.mediaType = "image";
+                    r.durationMs = 0L;
+                    rows.add(r);
                 }
             }
+        }
+        if (includeVideos) {
+            String[] vidProj = {
+                MediaStore.Video.Media._ID, MediaStore.Video.Media.DISPLAY_NAME,
+                MediaStore.Video.Media.BUCKET_DISPLAY_NAME, MediaStore.Video.Media.SIZE,
+                MediaStore.Video.Media.DATE_MODIFIED, MediaStore.Video.Media.MIME_TYPE,
+                MediaStore.Video.Media.DURATION
+            };
+            try (Cursor vc = ctx.getContentResolver().query(
+                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI, vidProj, sel, selArgs, order)) {
+                if (vc != null) {
+                    int idIdx = vc.getColumnIndex(MediaStore.Video.Media._ID);
+                    int nameIdx = vc.getColumnIndex(MediaStore.Video.Media.DISPLAY_NAME);
+                    int bktIdx = vc.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME);
+                    int sizeIdx = vc.getColumnIndex(MediaStore.Video.Media.SIZE);
+                    int modIdx = vc.getColumnIndex(MediaStore.Video.Media.DATE_MODIFIED);
+                    int mimeIdx = vc.getColumnIndex(MediaStore.Video.Media.MIME_TYPE);
+                    int durIdx = vc.getColumnIndex(MediaStore.Video.Media.DURATION);
+                    while (vc.moveToNext()) {
+                        String bkt = bktIdx >= 0 ? vc.getString(bktIdx) : null;
+                        if (bkt == null || bkt.trim().isEmpty()) bkt = "Other";
+                        if (bucketSet != null && !bucketSet.isEmpty() && !bucketSet.contains(bkt)) continue;
+                        long size = sizeIdx >= 0 ? vc.getLong(sizeIdx) : 0L;
+                        if (size <= 0) continue;
+                        MediaRow r = new MediaRow();
+                        r.id = idIdx >= 0 ? vc.getLong(idIdx) : 0L;
+                        r.name = nameIdx >= 0 ? vc.getString(nameIdx) : "video.mp4";
+                        r.bucket = bkt;
+                        r.size = size;
+                        r.dateSec = modIdx >= 0 ? vc.getLong(modIdx) : 0L;
+                        r.mime = mimeIdx >= 0 ? vc.getString(mimeIdx) : "video/mp4";
+                        r.mediaType = "video";
+                        r.durationMs = durIdx >= 0 ? vc.getLong(durIdx) : 0L;
+                        rows.add(r);
+                    }
+                }
+            } catch (Exception ignored) {}
+            Collections.sort(rows, (a, b) -> {
+                int cmp = Long.compare(b.dateSec, a.dateSec);
+                return cmp != 0 ? cmp : Long.compare(b.id, a.id);
+            });
+        }
+
+        int totalMatched = rows.size();
+        int end = Math.min(totalMatched, offset + limit);
+        JSArray items = new JSArray();
+        for (int i = offset; i < end; i++) {
+            MediaRow r = rows.get(i);
+            JSObject o = new JSObject();
+            o.put("id", r.id);
+            o.put("name", r.name);
+            o.put("bucket", r.bucket);
+            o.put("size", r.size);
+            o.put("dateMs", r.dateSec * 1000L);
+            o.put("mime", r.mime);
+            o.put("mediaType", r.mediaType);
+            o.put("durationMs", r.durationMs);
+            o.put("thumb", encodeThumbnailBase64Static(ctx, r.id, "", thumbSize, r.mediaType));
+            items.put(o);
         }
         JSObject ret = new JSObject();
         ret.put("photos", items);
@@ -1101,14 +1186,21 @@ public class AlbumSyncPlugin extends Plugin {
     }
 
     private InputStream openPhotoStream(long id, String filePath) throws Exception {
-        return openPhotoStreamStatic(getContext(), id, filePath);
+        return openPhotoStreamStatic(getContext(), id, filePath, "image");
     }
 
     public static InputStream openPhotoStreamStatic(Context ctx, long id, String filePath) throws Exception {
+        return openPhotoStreamStatic(ctx, id, filePath, "image");
+    }
+
+    public static InputStream openPhotoStreamStatic(Context ctx, long id, String filePath, String mediaType) throws Exception {
         if (filePath != null && !filePath.isEmpty()) {
             return new FileInputStream(new File(filePath));
         }
-        Uri uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
+        Uri baseUri = "video".equalsIgnoreCase(mediaType)
+                ? MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                : MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+        Uri uri = ContentUris.withAppendedId(baseUri, id);
         return ctx.getContentResolver().openInputStream(uri);
     }
 
@@ -1116,12 +1208,13 @@ public class AlbumSyncPlugin extends Plugin {
     public void getPhotoSha256(PluginCall call) {
         long id = optLongParam(call, "id", -1L);
         String filePath = call.getString("path", "");
+        String mediaType = call.getString("mediaType", "image");
         if (id < 0 && (filePath == null || filePath.isEmpty())) {
             call.reject("无效的照片 ID");
             return;
         }
         getBridge().execute(() -> {
-            try (InputStream is = openPhotoStream(id, filePath)) {
+            try (InputStream is = openPhotoStreamStatic(getContext(), id, filePath, mediaType)) {
                 if (is == null) {
                     call.reject("无法打开照片流");
                     return;
@@ -1150,6 +1243,7 @@ public class AlbumSyncPlugin extends Plugin {
     public void readPhotoChunk(PluginCall call) {
         long id = optLongParam(call, "id", -1L);
         String filePath = call.getString("path", "");
+        String mediaType = call.getString("mediaType", "image");
         long offset = optLongParam(call, "offset", 0L);
         int length = Math.max(1, Math.min(2 * 1024 * 1024, call.getInt("length", 1024 * 1024)));
         if (id < 0 && (filePath == null || filePath.isEmpty())) {
@@ -1157,7 +1251,7 @@ public class AlbumSyncPlugin extends Plugin {
             return;
         }
         getBridge().execute(() -> {
-            try (InputStream is = openPhotoStream(id, filePath)) {
+            try (InputStream is = openPhotoStreamStatic(getContext(), id, filePath, mediaType)) {
                 if (is == null) {
                     call.reject("无法读取照片");
                     return;
@@ -1558,6 +1652,19 @@ public class KeepAliveService extends Service {
                 }
             }
         } catch (Exception ignored) {}
+        try (android.database.Cursor vc = getContentResolver().query(
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                new String[]{ MediaStore.Video.Media.BUCKET_DISPLAY_NAME },
+                null, null, MediaStore.Video.Media.DATE_MODIFIED + " DESC")) {
+            if (vc != null) {
+                int idx = vc.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME);
+                while (vc.moveToNext()) {
+                    String b = idx >= 0 ? vc.getString(idx) : null;
+                    if (b == null || b.trim().isEmpty()) b = "Other";
+                    if (seen.add(b)) list.add(b);
+                }
+            }
+        } catch (Exception ignored) {}
         if (list.isEmpty()) list.add("Camera");
         return list;
     }
@@ -1583,11 +1690,13 @@ public class KeepAliveService extends Service {
             if ("auto".equals(mode) && !autoOn) return;
 
             String thumbScope = cfgJson.optString("thumbScope", "selected");
+            boolean thumbIncludeVideos = cfgJson.optBoolean("thumbIncludeVideos", true);
             java.util.List<String> targetBuckets = new java.util.ArrayList<>();
             if ("all".equals(thumbScope)) {
                 targetBuckets = listAllBucketsNative();
             } else {
-                JSONArray bArr = cfgJson.optJSONArray("buckets");
+                JSONArray bArr = cfgJson.optJSONArray("thumbBuckets");
+                if (bArr == null || bArr.length() == 0) bArr = cfgJson.optJSONArray("buckets");
                 if (bArr != null) {
                     for (int i = 0; i < bArr.length(); i++) {
                         String b = bArr.optString(i, "").trim();
@@ -1598,7 +1707,7 @@ public class KeepAliveService extends Service {
             }
 
             SharedPreferences sp = getSharedPreferences("milk_keepalive", Context.MODE_PRIVATE);
-            String scopeSig = thumbScope + ":" + String.join(",", targetBuckets);
+            String scopeSig = thumbScope + ":" + thumbIncludeVideos + ":" + String.join(",", targetBuckets);
             if ("full".equals(mode) || !scopeSig.equals(sp.getString("native_thumb_sig", ""))) {
                 SharedPreferences.Editor ed = sp.edit().putString("native_thumb_sig", scopeSig);
                 for (String b : targetBuckets) {
@@ -1614,7 +1723,7 @@ public class KeepAliveService extends Service {
                     if (!isWifiNow()) break;
                     Set<String> bSet = new HashSet<>();
                     bSet.add(b);
-                    JSONObject page = AlbumSyncPlugin.browsePhotosWithThumbsSync(this, bSet, 0, 40, 320);
+                    JSONObject page = AlbumSyncPlugin.browsePhotosWithThumbsSync(this, bSet, 0, 40, 320, thumbIncludeVideos);
                     JSONObject up = new JSONObject();
                     up.put("deviceId", deviceId);
                     up.put("bucket", b);
@@ -1640,7 +1749,7 @@ public class KeepAliveService extends Service {
                         postThumbProgress(cleanBase, token, "paused", "Wi-Fi 断开，缩略图同步暂停在 " + b, totalCached, 0, b);
                         return;
                     }
-                    JSONObject page = AlbumSyncPlugin.browsePhotosWithThumbsSync(this, bSet, off, 40, 320);
+                    JSONObject page = AlbumSyncPlugin.browsePhotosWithThumbsSync(this, bSet, off, 40, 320, thumbIncludeVideos);
                     int total = page.optInt("total", 0);
                     JSONArray photosArr = page.optJSONArray("photos");
                     int cnt = photosArr != null ? photosArr.length() : 0;

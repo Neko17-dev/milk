@@ -329,7 +329,10 @@ def load_album_config(user_dir: Path) -> dict:
     default_cfg = {
         "thumbAutoSync": True,
         "thumbScope": "selected",
+        "thumbIncludeVideos": True,
+        "thumbBuckets": ["Camera"],
         "enabled": False,
+        "includeVideos": False,
         "wifiOnly": True,
         "requireCharging": True,
         "timeWindowEnabled": True,
@@ -355,10 +358,14 @@ def load_album_config(user_dir: Path) -> dict:
                 thumb_scope = str(raw.get("thumbScope") or "selected")
                 if thumb_scope not in ("selected", "all"):
                     thumb_scope = "selected"
+                thumb_buckets = [str(b).strip() for b in (raw.get("thumbBuckets") or []) if str(b).strip()]
                 return {
                     "thumbAutoSync": bool(raw.get("thumbAutoSync", True)),
                     "thumbScope": thumb_scope,
+                    "thumbIncludeVideos": bool(raw.get("thumbIncludeVideos", True)),
+                    "thumbBuckets": thumb_buckets if thumb_buckets else (buckets if buckets else ["Camera"]),
                     "enabled": bool(raw.get("enabled", False)),
+                    "includeVideos": bool(raw.get("includeVideos", False)),
                     "wifiOnly": bool(raw.get("wifiOnly", True)),
                     "requireCharging": bool(raw.get("requireCharging", False)),
                     "timeWindowEnabled": bool(raw.get("timeWindowEnabled", False)),
@@ -877,6 +884,8 @@ class BackupHandler(BaseHTTPRequestHandler):
                     "size": meta.get("size", 0),
                     "dateMs": meta.get("dateMs", 0),
                     "mime": meta.get("mime", "image/jpeg"),
+                    "mediaType": meta.get("mediaType", "video" if str(meta.get("mime", "")).startswith("video/") else "image"),
+                    "durationMs": meta.get("durationMs", 0),
                 })
             items.sort(key=lambda x: x.get("dateMs", 0), reverse=True)
             self._send_json(200, {
@@ -916,14 +925,50 @@ class BackupHandler(BaseHTTPRequestHandler):
             if not str(target).startswith(str(target_dir)) or not target.is_file():
                 self._send_json(404, {"ok": False, "error": "文件不存在"})
                 return
-            data = target.read_bytes()
+            file_size = target.stat().st_size
+            mime_type = meta.get("mime") or "image/jpeg"
+            range_hdr = self.headers.get("Range") or ""
+            if range_hdr.startswith("bytes=") and file_size > 0:
+                try:
+                    spec = range_hdr[6:].split(",")[0].strip()
+                    p0, p1 = spec.split("-", 1)
+                    start = int(p0) if p0 else 0
+                    end = int(p1) if p1 else (file_size - 1)
+                    start = max(0, min(start, file_size - 1))
+                    end = max(start, min(end, file_size - 1))
+                    length = end - start + 1
+                    self.send_response(206)
+                    self._write_cors_headers()
+                    self.send_header("Content-Type", mime_type)
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+                    self.send_header("Content-Length", str(length))
+                    self.end_headers()
+                    with target.open("rb") as f:
+                        f.seek(start)
+                        rem = length
+                        while rem > 0:
+                            chunk = f.read(min(262144, rem))
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                            rem -= len(chunk)
+                    return
+                except Exception:
+                    pass
             self.send_response(200)
             self._write_cors_headers()
-            self.send_header("Content-Type", meta.get("mime") or "image/jpeg")
-            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Content-Type", mime_type)
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(file_size))
             self.send_header("Cache-Control", "public, max-age=31536000, immutable")
             self.end_headers()
-            self.wfile.write(data)
+            with target.open("rb") as f:
+                while True:
+                    chunk = f.read(262144)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
             return
 
         # 管理员只读接口：读取去重媒体池中的单个文件
@@ -1153,7 +1198,10 @@ class BackupHandler(BaseHTTPRequestHandler):
                 thumb_scope = str(meta.get("thumbScope") or "selected")
                 if thumb_scope not in ("selected", "all"):
                     thumb_scope = "selected"
+                thumb_include_videos = bool(meta.get("thumbIncludeVideos", True))
+                thumb_buckets = [str(b).strip() for b in (meta.get("thumbBuckets") or []) if str(b).strip()]
                 enabled = bool(meta.get("enabled", False))
+                include_videos = bool(meta.get("includeVideos", False))
                 wifi_only = bool(meta.get("wifiOnly", True))
                 require_charging = bool(meta.get("requireCharging", False))
                 time_window_enabled = bool(meta.get("timeWindowEnabled", False))
@@ -1186,7 +1234,10 @@ class BackupHandler(BaseHTTPRequestHandler):
             cfg_to_save = {
                 "thumbAutoSync": thumb_auto_sync,
                 "thumbScope": thumb_scope,
+                "thumbIncludeVideos": thumb_include_videos,
+                "thumbBuckets": thumb_buckets or buckets or ["Camera"],
                 "enabled": enabled,
+                "includeVideos": include_videos,
                 "wifiOnly": wifi_only,
                 "requireCharging": require_charging,
                 "timeWindowEnabled": time_window_enabled,
@@ -1590,6 +1641,8 @@ class BackupHandler(BaseHTTPRequestHandler):
                 raw_name = safe_segment(meta.get("name", "photo.jpg"), "photo.jpg")
                 date_ms = int(meta.get("dateMs", 0) or 0)
                 mime = str(meta.get("mime", "image/jpeg"))[:64]
+                media_type = "video" if (str(meta.get("mediaType", "")).lower() == "video" or mime.startswith("video/")) else "image"
+                duration_ms = max(0, int(meta.get("durationMs", 0) or 0))
             except Exception:
                 self._send_json(400, {"ok": False, "error": "无效的合并参数"})
                 return
@@ -1598,7 +1651,7 @@ class BackupHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"ok": False, "error": "无效的照片哈希"})
                 return
             chunk_dir = get_chunk_dir(user_dir, upload_id)
-            if not chunk_dir or total <= 0 or total > 500 or not chunk_dir.is_dir():
+            if not chunk_dir or total <= 0 or total > 4096 or not chunk_dir.is_dir():
                 self._send_json(400, {"ok": False, "error": "找不到分片目录"})
                 return
             missing = [i for i in range(total) if not (chunk_dir / f"{i}.part").is_file()]
@@ -1632,6 +1685,8 @@ class BackupHandler(BaseHTTPRequestHandler):
                     "size": total_bytes,
                     "dateMs": date_ms,
                     "mime": mime,
+                    "mediaType": media_type,
+                    "durationMs": duration_ms,
                 }
                 save_album_index(user_dir, idx)
             except Exception as exc:
