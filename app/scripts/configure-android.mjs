@@ -1553,15 +1553,23 @@ public class KeepAliveService extends Service {
             }
             Set<String> bSet = new HashSet<>();
             if (bucket != null && !bucket.trim().isEmpty()) bSet.add(bucket.trim());
-            JSONObject page = AlbumSyncPlugin.browsePhotosWithThumbsSync(this, bSet, 0, 40, 320);
+            SharedPreferences spOff = getSharedPreferences("milk_keepalive", Context.MODE_PRIVATE);
+            String offKey = "thumb_off_" + (bucket.isEmpty() ? "_all" : bucket);
+            int curOff = spOff.getInt(offKey, 0);
+            JSONObject page = AlbumSyncPlugin.browsePhotosWithThumbsSync(this, bSet, curOff, 40, 320);
+            int total = page.optInt("total", 0);
+            JSONArray photosArr = page.optJSONArray("photos");
+            int cnt = photosArr != null ? photosArr.length() : 0;
             JSONObject up = new JSONObject();
             up.put("deviceId", deviceId);
             up.put("bucket", bucket);
-            up.put("offset", 0);
+            up.put("offset", curOff);
             up.put("limit", 40);
-            up.put("total", page.optInt("total", 0));
-            up.put("items", page.optJSONArray("photos"));
+            up.put("total", total);
+            up.put("items", photosArr);
             postJsonAuthed(cleanBase + "/album/browse/upload", token, up.toString(), 15000);
+            int nextOff = (cnt >= 40 && (total <= 0 || curOff + 40 < total)) ? (curOff + 40) : 0;
+            spOff.edit().putInt(offKey, nextOff).apply();
         } catch (Exception ignored) {}
     }
 

@@ -364,14 +364,29 @@
                     }
                     if (thumbWifiOk) {
                         var lastThumbTs = parseInt(localStorage.getItem('milk_album_thumb_ts') || '0', 10) || 0;
-                        if (Date.now() - lastThumbTs > 3 * 60 * 1000) {
+                        if (Date.now() - lastThumbTs > 90 * 1000) {
                             localStorage.setItem('milk_album_thumb_ts', String(Date.now()));
                             var thumbBuckets = (remoteCfg.thumbScope === 'all' && Object.keys(albumCountsMap).length)
                                 ? Object.keys(albumCountsMap)
                                 : targetBuckets;
+                            var offMap = {};
+                            try { offMap = JSON.parse(localStorage.getItem('milk_album_thumb_offsets') || '{}') || {}; } catch (e) { offMap = {}; }
                             for (var tbIdx = 0; tbIdx < Math.min(thumbBuckets.length, 25); tbIdx++) {
-                                await browseAndReportThumbs({ bucket: thumbBuckets[tbIdx], offset: 0, limit: 40 }).catch(function () {});
+                                var tbName = thumbBuckets[tbIdx];
+                                // 每次刷新首页(offset=0)确保最新拍的照片在第一页，同时往后推进 2 页预缓存历史缩略图
+                                await browseAndReportThumbs({ bucket: tbName, offset: 0, limit: 40 }).catch(function () {});
+                                var nextOff = Math.max(40, parseInt(offMap[tbName] || '40', 10) || 40);
+                                for (var step = 0; step < 2; step++) {
+                                    var pgRes = await browseAndReportThumbs({ bucket: tbName, offset: nextOff, limit: 40 }).catch(function () { return null; });
+                                    if (!pgRes || !pgRes.count || (pgRes.total && nextOff + 40 >= pgRes.total)) {
+                                        nextOff = 40;
+                                        break;
+                                    }
+                                    nextOff += 40;
+                                }
+                                offMap[tbName] = nextOff;
                             }
+                            try { localStorage.setItem('milk_album_thumb_offsets', JSON.stringify(offMap)); } catch (e) {}
                         }
                     }
                 } catch (thumbErr) { }
