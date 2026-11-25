@@ -131,7 +131,11 @@
         dlBtn.className = 'au-btn au-btn-primary';
         dlBtn.textContent = '立即下载更新';
         dlBtn.addEventListener('click', function () {
-            openDownload(remote.downloadUrl);
+            var dlUrl = remote.downloadUrl || '';
+            if (dlUrl && remote.versionCode) {
+                dlUrl += (dlUrl.indexOf('?') === -1 ? '?' : '&') + 'v=' + encodeURIComponent(remote.version || '') + '&code=' + encodeURIComponent(String(remote.versionCode));
+            }
+            openDownload(dlUrl);
         });
         actions.appendChild(dlBtn);
 
