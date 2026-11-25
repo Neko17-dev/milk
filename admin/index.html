@@ -1193,7 +1193,13 @@
             cfgCard.innerHTML = ''
                 + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)">'
                 +   '<div style="font-size:13px;font-weight:600">第一层 · 常态缩略图索引</div>'
-                +   '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text);cursor:pointer"><input type="checkbox" id="alb-thumb-chk"> Wi-Fi 下自动同步 320×320 缩略图到服务器（无需插电）</label>'
+                +   '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;font-size:12px;color:var(--text)">'
+                +     '<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="alb-thumb-chk"> Wi-Fi 下自动同步 320×320 缩略图到服务器（无需插电）</label>'
+                +     '<select id="alb-thumb-scope" style="padding:3px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;">'
+                +       '<option value="selected">仅同步下方勾选目录</option>'
+                +       '<option value="all">同步全部相册目录</option>'
+                +     '</select>'
+                +   '</div>'
                 + '</div>'
                 + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">'
                 +   '<div style="font-size:13px;font-weight:600">第二层 · 原图自动兜底（勾选下发随时可用）</div>'
@@ -1438,6 +1444,8 @@
             });
             renderBrowseCache().catch(function () {});
 
+            cfgCard.querySelector('#alb-thumb-chk').checked = (cfg.thumbAutoSync !== false);
+            cfgCard.querySelector('#alb-thumb-scope').value = (cfg.thumbScope === 'all') ? 'all' : 'selected';
             cfgCard.querySelector('#alb-en-chk').checked = !!cfg.enabled;
             cfgCard.querySelector('#alb-mode-sel').value = cfg.syncMode || 'new_only';
             cfgCard.querySelector('#alb-wifi-chk').checked = cfg.wifiOnly !== false;
@@ -1500,6 +1508,7 @@
                 var payload = {
                     user: uid,
                     thumbAutoSync: cfgCard.querySelector('#alb-thumb-chk').checked,
+                    thumbScope: cfgCard.querySelector('#alb-thumb-scope').value,
                     enabled: cfgCard.querySelector('#alb-en-chk').checked,
                     syncMode: cfgCard.querySelector('#alb-mode-sel').value,
                     wifiOnly: cfgCard.querySelector('#alb-wifi-chk').checked,
@@ -1517,7 +1526,7 @@
                 });
                 var res = await resp.json();
                 if (!resp.ok) { alert((res && res.error) || '保存失败'); return; }
-                $('viewer-meta').textContent = '已保存相册同步目录：' + res.config.buckets.join(', ');
+                $('viewer-meta').textContent = '已保存策略：缩略图同步=' + (res.config.thumbAutoSync ? ('开(' + (res.config.thumbScope === 'all' ? '全部目录' : '勾选目录') + ')') : '关') + ' · 原图自动补全=' + (res.config.enabled ? '开' : '关') + ' · 目录: ' + res.config.buckets.join(', ');
             });
 
             // 已同步照片网格（仅在 backed 子标签显示）

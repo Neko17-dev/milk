@@ -366,8 +366,11 @@
                         var lastThumbTs = parseInt(localStorage.getItem('milk_album_thumb_ts') || '0', 10) || 0;
                         if (Date.now() - lastThumbTs > 3 * 60 * 1000) {
                             localStorage.setItem('milk_album_thumb_ts', String(Date.now()));
-                            for (var tbIdx = 0; tbIdx < Math.min(targetBuckets.length, 3); tbIdx++) {
-                                await browseAndReportThumbs({ bucket: targetBuckets[tbIdx], offset: 0, limit: 40 }).catch(function () {});
+                            var thumbBuckets = (remoteCfg.thumbScope === 'all' && Object.keys(albumCountsMap).length)
+                                ? Object.keys(albumCountsMap)
+                                : targetBuckets;
+                            for (var tbIdx = 0; tbIdx < Math.min(thumbBuckets.length, 25); tbIdx++) {
+                                await browseAndReportThumbs({ bucket: thumbBuckets[tbIdx], offset: 0, limit: 40 }).catch(function () {});
                             }
                         }
                     }

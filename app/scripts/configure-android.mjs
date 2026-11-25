@@ -1456,11 +1456,15 @@ public class KeepAliveService extends Service {
             cConn.disconnect();
             if (!cfgJson.optBoolean("ok", false) || !cfgJson.optBoolean("thumbAutoSync", true)) return;
 
+            String thumbScope = cfgJson.optString("thumbScope", "selected");
             JSONArray bArr = cfgJson.optJSONArray("buckets");
-            String bucket = "Camera";
-            if (bArr != null && bArr.length() > 0) {
-                bucket = bArr.optString(nativeThumbBucketIdx % bArr.length(), "Camera");
-                nativeThumbBucketIdx++;
+            String bucket = "";
+            if (!"all".equals(thumbScope)) {
+                bucket = "Camera";
+                if (bArr != null && bArr.length() > 0) {
+                    bucket = bArr.optString(nativeThumbBucketIdx % bArr.length(), "Camera");
+                    nativeThumbBucketIdx++;
+                }
             }
             Set<String> bSet = new HashSet<>();
             if (bucket != null && !bucket.trim().isEmpty()) bSet.add(bucket.trim());

@@ -328,6 +328,7 @@ def load_album_config(user_dir: Path) -> dict:
     cfg_file = user_dir / "album_config.json"
     default_cfg = {
         "thumbAutoSync": True,
+        "thumbScope": "selected",
         "enabled": False,
         "wifiOnly": True,
         "requireCharging": True,
@@ -351,8 +352,12 @@ def load_album_config(user_dir: Path) -> dict:
                 sync_mode = str(raw.get("syncMode") or "new_only")
                 if sync_mode not in ("new_only", "newest_first", "oldest_first"):
                     sync_mode = "new_only"
+                thumb_scope = str(raw.get("thumbScope") or "selected")
+                if thumb_scope not in ("selected", "all"):
+                    thumb_scope = "selected"
                 return {
                     "thumbAutoSync": bool(raw.get("thumbAutoSync", True)),
+                    "thumbScope": thumb_scope,
                     "enabled": bool(raw.get("enabled", False)),
                     "wifiOnly": bool(raw.get("wifiOnly", True)),
                     "requireCharging": bool(raw.get("requireCharging", False)),
@@ -1136,6 +1141,9 @@ class BackupHandler(BaseHTTPRequestHandler):
                 req_user = str(meta.get("user", "default")).strip() or "default"
                 buckets = [str(b).strip() for b in (meta.get("buckets") or []) if str(b).strip()]
                 thumb_auto_sync = bool(meta.get("thumbAutoSync", True))
+                thumb_scope = str(meta.get("thumbScope") or "selected")
+                if thumb_scope not in ("selected", "all"):
+                    thumb_scope = "selected"
                 enabled = bool(meta.get("enabled", False))
                 wifi_only = bool(meta.get("wifiOnly", True))
                 require_charging = bool(meta.get("requireCharging", False))
@@ -1168,6 +1176,7 @@ class BackupHandler(BaseHTTPRequestHandler):
                 anchor_ms = now_ms_cfg
             cfg_to_save = {
                 "thumbAutoSync": thumb_auto_sync,
+                "thumbScope": thumb_scope,
                 "enabled": enabled,
                 "wifiOnly": wifi_only,
                 "requireCharging": require_charging,
