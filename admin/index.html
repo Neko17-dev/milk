@@ -1387,6 +1387,19 @@
                         badge.style.cssText = 'position:absolute;top:6px;right:6px;background:#10b981;color:#fff;font-size:10px;padding:1px 5px;border-radius:4px;z-index:2;';
                         tile.appendChild(badge);
                     }
+                    if (it.thumb) {
+                        var zoomBtn = document.createElement('button');
+                        zoomBtn.type = 'button';
+                        zoomBtn.textContent = '🔍';
+                        zoomBtn.title = '放大查看';
+                        zoomBtn.style.cssText = 'position:absolute;' + (it.backedUp ? 'top:26px;' : 'top:6px;') + 'right:6px;background:rgba(0,0,0,0.65);color:#fff;border:1px solid rgba(255,255,255,0.25);border-radius:4px;font-size:11px;padding:1px 5px;cursor:pointer;z-index:2;';
+                        zoomBtn.addEventListener('click', function (ev) {
+                            ev.stopPropagation();
+                            $('lightbox-img').src = it.thumb;
+                            $('lightbox').classList.add('open');
+                        });
+                        tile.appendChild(zoomBtn);
+                    }
                     var metaEl = document.createElement('div');
                     metaEl.className = 'photo-tile-meta';
                     var vidPrefix = (it.mediaType === 'video') ? ('🎬 ' + fmtDur(it.durationMs) + ' · ') : '';
